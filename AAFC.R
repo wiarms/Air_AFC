@@ -314,6 +314,12 @@ AAFC_gen_REG_file <- function(src_file, dst_file, reg_key)
 #   models_str: provides models in this work
 #   addons_str: specifies extra empty cols in W table (if needed)
 #
+# W table (for each day) -->
+# | REG | SID | model1 | model2 | ... | obs | afc | res |
+#
+# U table (for each day) -->
+# | REG | snr | se | λ | u1 | u2 | ... |  A1 |  A2 | ...
+#
 AAFC_gen_W_table <- function(src_dir, dst_dir, work_name, subject, models_str,
                              addons_str = character(0), REG_file)
 {
@@ -382,17 +388,97 @@ AAFC_gen_W_table <- function(src_dir, dst_dir, work_name, subject, models_str,
       }
     }
 
-    if (dir.exists(dst_dir) == FALSE) {
-      dir.create(dst_dir)
+    if (i == 1) {
+      if (dir.exists(dst_dir) == FALSE) {
+        dir.create(dst_dir)
+      }
     }
     write.table(w_tbl, w_file[i], sep = ",", quote = FALSE, row.names = FALSE,
                 fileEncoding = "GBK")
   }
 }
 
-AAFC_gen_U_table <- function()
+#
+# W table (for each day) -->
+# | REG | SID | model1 | model2 | ... | obs | afc | res |
+#
+# U table (for each day) -->
+# | REG | snr | se | λ | u1 | u2 | ... |  A1 |  A2 | ...
+#
+AAFC_gen_U_table <- function(dst_dir, dst_file, models_str, REG_file)
 {
+  # prepare for REG file
+  REG_col_names <- c("REG", "SID")
+  REG_col_classes <- c("integer", "character")
 
+  # read in REG file
+  REG_tbl <- read.table(REG_file, sep = ",", header = TRUE,
+                        colClasses = REG_col_classes,
+                        strip.white = TRUE,
+                        stringsAsFactors = FALSE)
+
+  # prepare for U_tbl
+  nr_regions <- REG_tbl[nrow(REG_tbl), 1]
+  nr_models <- length(models_str)
+  if (nr_models < 1) {
+    stop("Invalid models_str length")
+  }
+  nr_u <- nr_models
+
+  # generate U_tbl
+  REG <- seq(1, nr_regions, 1)
+  snr <- rep(-999, nr_regions)
+  tmp <- rep(-999, nr_regions)
+  U_tbl <- data.frame(REG, snr)
+
+  for (i in 1:nr_regions) {
+    REG_i <- subset(REG_tbl, REG == i)
+    U_tbl[i, 2] <- nrow(REG_i)
+  }
+
+  U_tbl <- cbind(U_tbl, tmp)
+  names(U_tbl)[ncol(U_tbl)] <- "se"
+  U_tbl <- cbind(U_tbl, tmp)
+  names(U_tbl)[ncol(U_tbl)] <- "lambda"
+
+  for (i in 1:nr_u) {
+    U_tbl <- cbind(U_tbl, tmp)
+    names(U_tbl)[ncol(U_tbl)] <- paste("u_", models_str[i], sep = "")
+  }
+
+  for (i in 1:nr_u) {
+    for (j in 1:nr_u) {
+      U_tbl <- cbind(U_tbl, tmp)
+      names(U_tbl)[ncol(U_tbl)] <- paste("A_", as.character(i),
+                                         as.character(j), sep = "")
+    }
+  }
+
+  if (dir.exists(dst_dir) == FALSE) {
+    dir.create(dst_dir)
+  }
+  U_file <- paste(dst_dir, "/", dst_file, sep = "")
+  write.table(U_tbl, U_file, sep = ",", quote = FALSE, row.names = FALSE,
+              fileEncoding = "GBK")
+}
+
+#
+# Prepare for work directory
+#
+AAFC_gen_work_dir <- function(models_dir, subject, xmodels_str, obs_str,
+                              work_dir, work_name, REG_file)
+{
+  models_str <- c(xmodels_str, obs_str)
+  U_dir <- paste(work_dir, "/U", sep = "")
+  U_file <- "U.csv"
+
+  message("Generating work directory")
+  message("Generating W tables...")
+  AAFC_gen_W_table(models_dir, work_dir, work_name, subject, models_str,
+                   c("afc", "res"), REG_file)
+  message("Generating U table...")
+  AAFC_gen_U_table(U_dir, U_file, xmodels_str, REG_file)
+  message("Generating work directory OK")
 }
 
 AAFC_work_temporal <- function()
