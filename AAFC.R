@@ -310,8 +310,8 @@ AAFC_gen_REG_file <- function(src_file, dst_file, reg_key)
 #                    work = m4, subject = O3, variable = D20150901
 #                    the variable is parsed from model file automaticlly
 #
-# models_str/addons_str should be character vectors
-#   models_str: provides models in this work
+# xmodels_str/addons_str should be character vectors
+#   xmodels_str: provides models (and/or obs) in this work
 #   addons_str: specifies extra empty cols in W table (if needed)
 #
 # W table (for each day) -->
@@ -320,7 +320,7 @@ AAFC_gen_REG_file <- function(src_file, dst_file, reg_key)
 # U table (for each day) -->
 # | REG | snr | se | λ | u1 | u2 | ... |  A1 |  A2 | ...
 #
-AAFC_gen_W_table <- function(src_dir, dst_dir, work_name, subject, models_str,
+AAFC_gen_W_table <- function(src_dir, dst_dir, work_name, subject, xmodels_str,
                              addons_str = character(0), REG_file)
 {
   # prepare for REG file
@@ -334,12 +334,12 @@ AAFC_gen_W_table <- function(src_dir, dst_dir, work_name, subject, models_str,
                         stringsAsFactors = FALSE)
 
   # prepare for model tables
-  nr_models <- length(models_str)
-  model_file <- paste(src_dir, "/", subject, "_", models_str, ".csv", sep = "")
+  nr_xmodels <- length(xmodels_str)
+  model_file <- paste(src_dir, "/", subject, "_", xmodels_str, ".csv", sep = "")
   model_tbl <- list()
 
   # read in model table and merge with REG_tbl
-  for (i in 1:nr_models) {
+  for (i in 1:nr_xmodels) {
     message("reading in ", model_file[i])
     tbl <- read.table(model_file[i], sep = ",", header = TRUE,
                                  colClasses = c("character"),
@@ -349,7 +349,7 @@ AAFC_gen_W_table <- function(src_dir, dst_dir, work_name, subject, models_str,
   }
 
   # check consistency of models
-  for (i in 1:nr_models) {
+  for (i in 1:nr_xmodels) {
     if (i == 1) {
       model_var <- names(model_tbl[[i]])
       REG_sid <- REG_tbl[ , "SID"]
@@ -375,10 +375,10 @@ AAFC_gen_W_table <- function(src_dir, dst_dir, work_name, subject, models_str,
   for (i in 1:nr_vars) {
     message("handling ", w_var[i])
     w_tbl <- REG_tbl
-    for (j in 1:nr_models) {
+    for (j in 1:nr_xmodels) {
       nc <- ncol(w_tbl) + 1
       w_tbl[ , nc] <- model_tbl[[j]][ , 2 + i]
-      names(w_tbl)[nc] <- models_str[j]
+      names(w_tbl)[nc] <- xmodels_str[j]
     }
 
     if (nr_addons > 0) {
@@ -407,6 +407,9 @@ AAFC_gen_W_table <- function(src_dir, dst_dir, work_name, subject, models_str,
 #
 AAFC_gen_U_table <- function(dst_dir, dst_file, models_str, REG_file)
 {
+  # param definitions
+  INIT_lambda <- 100
+
   # prepare for REG file
   REG_col_names <- c("REG", "SID")
   REG_col_classes <- c("integer", "character")
@@ -427,10 +430,11 @@ AAFC_gen_U_table <- function(dst_dir, dst_file, models_str, REG_file)
 
   # generate U_tbl
   REG <- seq(1, nr_regions, 1)
-  snr <- rep(-999, nr_regions)
-  tmp <- rep(-999, nr_regions)
-  U_tbl <- data.frame(REG, snr)
+  snr <- rep(0, nr_regions)
+  lambda <- rep(INIT_lambda, nr_regions)
+  tmp <- rep(0, nr_regions)
 
+  U_tbl <- data.frame(REG, snr)
   for (i in 1:nr_regions) {
     REG_i <- subset(REG_tbl, REG == i)
     U_tbl[i, 2] <- nrow(REG_i)
@@ -438,7 +442,7 @@ AAFC_gen_U_table <- function(dst_dir, dst_file, models_str, REG_file)
 
   U_tbl <- cbind(U_tbl, tmp)
   names(U_tbl)[ncol(U_tbl)] <- "se"
-  U_tbl <- cbind(U_tbl, tmp)
+  U_tbl <- cbind(U_tbl, lambda)
   names(U_tbl)[ncol(U_tbl)] <- "lambda"
 
   for (i in 1:nr_u) {
@@ -451,6 +455,9 @@ AAFC_gen_U_table <- function(dst_dir, dst_file, models_str, REG_file)
       U_tbl <- cbind(U_tbl, tmp)
       names(U_tbl)[ncol(U_tbl)] <- paste("A_", as.character(i),
                                          as.character(j), sep = "")
+      if (i == j) {
+        U_tbl[ , ncol(U_tbl)] <- INIT_lambda
+      }
     }
   }
 
@@ -465,25 +472,83 @@ AAFC_gen_U_table <- function(dst_dir, dst_file, models_str, REG_file)
 #
 # Prepare for work directory
 #
-AAFC_gen_work_dir <- function(models_dir, subject, xmodels_str, obs_str,
+AAFC_gen_work_dir <- function(models_dir, subject, models_str, obs_str,
                               work_dir, work_name, REG_file)
 {
-  models_str <- c(xmodels_str, obs_str)
+  xmodels_str <- c(models_str, obs_str)
   U_dir <- paste(work_dir, "/U", sep = "")
   U_file <- "U.csv"
 
   message("Generating work directory")
   message("Generating W tables...")
-  AAFC_gen_W_table(models_dir, work_dir, work_name, subject, models_str,
+  AAFC_gen_W_table(models_dir, work_dir, work_name, subject, xmodels_str,
                    c("afc", "res"), REG_file)
   message("Generating U table...")
-  AAFC_gen_U_table(U_dir, U_file, xmodels_str, REG_file)
+  AAFC_gen_U_table(U_dir, U_file, models_str, REG_file)
   message("Generating work directory OK")
 }
 
-AAFC_work_temporal <- function()
+#
+# W file: workname_subject_date.csv
+# U file: U/U_date.csv
+#
+# W table (for each day) -->
+# | REG | SID | model1 | model2 | ... | obs | afc | res |
+#
+# U table (for each day) -->
+# | REG | snr | se | λ | u1 | u2 | ... |  A1 |  A2 | ...
+#
+AAFC_work_temporal <- function(work_dir, work_name, subject, start_day, end_day,
+                               nr_models, lambda = 0)
 {
-  test
+  # day indexes
+  sday <- as.Date(start_day)
+  eday <- as.Date(end_day)
+  if (sday <= eday) {
+    nr_days <- difftime(eday, sday, units = "days") + 1
+    day_seq_by <- "day"
+  } else {
+    nr_days <- difftime(sday, eday, units = "days") + 1
+    day_seq_by <- "-1 day"
+  }
+  day_idx <- seq(sday, by = day_seq_by, length.out = nr_days)
+  day_idx <- format(day_idx, "%Y%m%d")
+
+  # file names
+  day_prefix <- "D"
+  W_name <- sprintf("%s/%s_%s_%s%s.csv", work_dir, work_name, subject,
+                    day_prefix, day_idx)
+  U_name <- sprintf("%s/U/U_%s%s", work_dir, day_prefix, day_idx)
+  U_default <- sprintf("%s/U/U.csv", work_dir)
+
+  # prepare for W/U file
+  W_col_names <- c("REG", "SID")
+  W_ex_cols <- nr_models + 3
+  W_col_classes <- c("integer", "character", rep("numeric", W_ex_cols))
+
+  U_col_names <- c("REG", "snr", "se", "lambda")
+  U_ex_cols <- nr_models + nr_models ^ 2
+  U_col_classes <- c("integer", "numeric", "numeric", "integer",
+                     rep("numeric", U_ex_cols))
+
+  if (!file.exists(U_name[1])) {
+    file.copy(U_default, U_name[1])
+  }
+
+  # work for each day
+  for (i in 1:nr_days) {
+    W_tbl <- read.table(W_name[i], sep = ",", header = TRUE,
+                        colClasses = W_col_classes,
+                        strip.white = TRUE,
+                        stringsAsFactors = FALSE)
+    U_tbl <- read.table(U_name[i], sep = ",", header = TRUE,
+                        colClasses = U_col_classes,
+                        strip.white = TRUE,
+                        stringsAsFactors = FALSE)
+
+
+  }
+
 }
 
 AAFC_work_spatial <- function ()
