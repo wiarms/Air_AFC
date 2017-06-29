@@ -317,8 +317,12 @@ AAFC_gen_REG_file <- function(src_file, dst_file, reg_key)
 # W table (for each day) -->
 # | REG | SID | model1 | model2 | ... | obs | afc | res |
 #
-# U table (for each day) -->
-# | REG | snr | se | λ | u1 | u2 | ... |  A1 |  A2 | ...
+# . REG = region
+# . SID = station ID
+# . model 1-N
+# . obs = observation
+# . afc = aggratioin_forecast
+# . res = residual
 #
 AAFC_gen_W_table <- function(src_dir, dst_dir, work_name, subject, xmodels_str,
                              addons_str = character(0), REG_file)
@@ -399,17 +403,19 @@ AAFC_gen_W_table <- function(src_dir, dst_dir, work_name, subject, xmodels_str,
 }
 
 #
-# W table (for each day) -->
-# | REG | SID | model1 | model2 | ... | obs | afc | res |
-#
 # U table (for each day) -->
-# | REG | snr | se | λ | u1 | u2 | ... |  A1 |  A2 | ...
+# | REG | snr | sum_e | lambda | b0 | u1 | u2 | ... |  A1 |  A2 | ...
+#
+# REG = region
+# snr = number of stations in the region
+# sum_e = error summation of stations in the region
+# lambda = lambda used for ridge-regression
+# b0 = constant term of regression
+# u 1-N = weight for models of regression
+# A 11-(N+1)(N+1) = the X'X matrix of regression
 #
 AAFC_gen_U_table <- function(dst_dir, dst_file, models_str, REG_file)
 {
-  # param definitions
-  INIT_lambda <- 100
-
   # prepare for REG file
   REG_col_names <- c("REG", "SID")
   REG_col_classes <- c("integer", "character")
@@ -427,11 +433,11 @@ AAFC_gen_U_table <- function(dst_dir, dst_file, models_str, REG_file)
     stop("Invalid models_str length")
   }
   nr_u <- nr_models
+  nr_a <- nr_models + 1
 
   # generate U_tbl
   REG <- seq(1, nr_regions, 1)
   snr <- rep(0, nr_regions)
-  lambda <- rep(INIT_lambda, nr_regions)
   tmp <- rep(0, nr_regions)
 
   U_tbl <- data.frame(REG, snr)
@@ -441,23 +447,22 @@ AAFC_gen_U_table <- function(dst_dir, dst_file, models_str, REG_file)
   }
 
   U_tbl <- cbind(U_tbl, tmp)
-  names(U_tbl)[ncol(U_tbl)] <- "se"
-  U_tbl <- cbind(U_tbl, lambda)
+  names(U_tbl)[ncol(U_tbl)] <- "sum_e"
+  U_tbl <- cbind(U_tbl, tmp)
   names(U_tbl)[ncol(U_tbl)] <- "lambda"
+  U_tbl <- cbind(U_tbl, tmp)
+  names(U_tbl)[ncol(U_tbl)] <- "b0"
 
   for (i in 1:nr_u) {
     U_tbl <- cbind(U_tbl, tmp)
     names(U_tbl)[ncol(U_tbl)] <- paste("u_", models_str[i], sep = "")
   }
 
-  for (i in 1:nr_u) {
-    for (j in 1:nr_u) {
+  for (i in 1:nr_a) {
+    for (j in 1:nr_a) {
       U_tbl <- cbind(U_tbl, tmp)
       names(U_tbl)[ncol(U_tbl)] <- paste("A_", as.character(i),
                                          as.character(j), sep = "")
-      if (i == j) {
-        U_tbl[ , ncol(U_tbl)] <- INIT_lambda
-      }
     }
   }
 
@@ -470,6 +475,50 @@ AAFC_gen_U_table <- function(dst_dir, dst_file, models_str, REG_file)
 }
 
 #
+# reset U table
+#   1) set all values to 0, except for col "REG" and "snr"
+#   2) set col "lambda" and related "Axx" to lambda
+#
+AAFC_rst_U_table <- function(U_file, nr_models, lambda)
+{
+  U_col_names <- c("REG", "snr", "sum_e", "lambda", "b0")
+  U_ex_cols <- nr_models + ((nr_models + 1) ^ 2)
+  U_cols <- 5 + U_ex_cols
+  U_col_classes <- c("integer", "integer", "numeric", "integer", "numeric",
+                     rep("numeric", U_ex_cols))
+
+  U_tbl <- read.table(U_file, sep = ",", header = TRUE,
+                      colClasses = U_col_classes,
+                      strip.white = TRUE,
+                      stringsAsFactors = FALSE)
+
+  if (!identical(names(U_tbl)[1:5], U_col_names)) {
+    stop("seems U_file is not a U table")
+  }
+  if (ncol(U_tbl) != U_cols) {
+    stop("seems U_file is not a U table")
+  }
+
+  U_tbl[ , 6:U_cols] <- 0
+
+  U_tbl[ , c("lambda")] <- lambda
+
+  nr_a <- nr_models + 1
+  idx_a <- 5 + nr_models
+  for (i in 1:nr_a) {
+    for (j in 1:nr_a) {
+      idx_a <- idx_a + 1
+      if (i == j) {
+        U_tbl[ , idx_a] <- lambda
+      }
+    }
+  }
+
+  write.table(U_tbl, U_file, sep = ",", quote = FALSE, row.names = FALSE,
+              fileEncoding = "GBK")
+}
+
+#
 # Prepare for work directory
 #
 AAFC_gen_work_dir <- function(models_dir, subject, models_str, obs_str,
@@ -477,14 +526,14 @@ AAFC_gen_work_dir <- function(models_dir, subject, models_str, obs_str,
 {
   xmodels_str <- c(models_str, obs_str)
   U_dir <- paste(work_dir, "/U", sep = "")
-  U_file <- "U.csv"
+  U_name <- "U.csv"
 
   message("Generating work directory")
   message("Generating W tables...")
   AAFC_gen_W_table(models_dir, work_dir, work_name, subject, xmodels_str,
                    c("afc", "res"), REG_file)
   message("Generating U table...")
-  AAFC_gen_U_table(U_dir, U_file, models_str, REG_file)
+  AAFC_gen_U_table(U_dir, U_name, models_str, REG_file)
   message("Generating work directory OK")
 }
 
@@ -496,29 +545,35 @@ AAFC_gen_work_dir <- function(models_dir, subject, models_str, obs_str,
 # | REG | SID | model1 | model2 | ... | obs | afc | res |
 #
 # U table (for each day) -->
-# | REG | snr | se | λ | u1 | u2 | ... |  A1 |  A2 | ...
+# | REG | snr | sum_e | lambda | b0 | u1 | u2 | ... |  A1 |  A2 | ...
 #
 AAFC_work_temporal <- function(work_dir, work_name, subject, start_day, end_day,
-                               nr_models, lambda = 0)
+                               nr_models, reset_work = FALSE, lambda = 0,
+                               do_predict = TRUE, do_train = TRUE)
 {
   # day indexes
   sday <- as.Date(start_day)
   eday <- as.Date(end_day)
-  if (sday <= eday) {
-    nr_days <- difftime(eday, sday, units = "days") + 1
-    day_seq_by <- "day"
-  } else {
-    nr_days <- difftime(sday, eday, units = "days") + 1
-    day_seq_by <- "-1 day"
+  if (sday > eday) {
+    tmp <- sday
+    sday <- eday
+    eday <- tmp
   }
-  day_idx <- seq(sday, by = day_seq_by, length.out = nr_days)
+
+  nr_days <- difftime(eday, sday, units = "days") + 1
+  day_seq_by <- "day"
+
+  #extra day for the latest new U_tbl
+  nr_idx_days <- nr_days + 1
+
+  day_idx <- seq(sday, by = day_seq_by, length.out = nr_idx_days)
   day_idx <- format(day_idx, "%Y%m%d")
 
   # file names
   day_prefix <- "D"
   W_name <- sprintf("%s/%s_%s_%s%s.csv", work_dir, work_name, subject,
                     day_prefix, day_idx)
-  U_name <- sprintf("%s/U/U_%s%s", work_dir, day_prefix, day_idx)
+  U_name <- sprintf("%s/U/U_%s%s.csv", work_dir, day_prefix, day_idx)
   U_default <- sprintf("%s/U/U.csv", work_dir)
 
   # prepare for W/U file
@@ -526,52 +581,150 @@ AAFC_work_temporal <- function(work_dir, work_name, subject, start_day, end_day,
   W_ex_cols <- nr_models + 3
   W_col_classes <- c("integer", "character", rep("numeric", W_ex_cols))
 
-  U_col_names <- c("REG", "snr", "se", "lambda")
-  U_ex_cols <- nr_models + nr_models ^ 2
-  U_col_classes <- c("integer", "numeric", "numeric", "integer",
+  U_col_names <- c("REG", "snr", "sum_e", "lambda", "b0")
+  U_ex_cols <- nr_models + ((nr_models + 1) ^ 2)
+  U_col_classes <- c("integer", "integer", "numeric", "integer", "numeric",
                      rep("numeric", U_ex_cols))
 
-  if (!file.exists(U_name[1])) {
+  # reset_work
+  #   TRUE: start new sequence
+  #   FALSE: continue with current sequence
+  #
+  if (reset_work) {
     file.copy(U_default, U_name[1])
+    AAFC_rst_U_table(U_name[1], nr_models, lambda)
   }
 
+  # register process engine
+  AAFC_do_predict <- AAFC_RR_do_predict
+  AAFC_do_train <- AAFC_RR_do_train
+
   # work for each day
+  U_tbl <- read.table(U_name[1], sep = ",", header = TRUE,
+                          colClasses = U_col_classes,
+                          strip.white = TRUE,
+                          stringsAsFactors = FALSE)
+
   for (i in 1:nr_days) {
     W_tbl <- read.table(W_name[i], sep = ",", header = TRUE,
                         colClasses = W_col_classes,
                         strip.white = TRUE,
                         stringsAsFactors = FALSE)
-    U_tbl <- read.table(U_name[i], sep = ",", header = TRUE,
-                        colClasses = U_col_classes,
-                        strip.white = TRUE,
-                        stringsAsFactors = FALSE)
+    W_tbl[W_tbl == -999] <- NA
 
+    if (do_predict) {
+      result <- AAFC_do_predict(W_tbl, U_tbl, nr_models)
+      W_tbl <- result$W_tbl
+    }
+    if (do_train) {
+      result <- AAFC_do_train(W_tbl, U_tbl, nr_models)
+      W_tbl <- result$W_tbl
+      U_tbl <- result$U_tbl
+    }
 
+    if (do_predict || do_train) {
+      write.table(W_tbl, W_name[i], sep = ",", quote = FALSE,
+                  row.names = FALSE, fileEncoding = "GBK")
+    }
+    if (do_train) {
+      write.table(U_tbl, U_name[i + 1], sep = ",", quote = FALSE,
+                  row.names = FALSE, fileEncoding = "GBK")
+    }
+  }
+}
+
+#
+# depends on W/U talbe format heavily
+#
+AAFC_RR_do_predict <- function(W_tbl, U_tbl, nr_models)
+{
+  regions <- U_tbl[ , c("REG")]
+
+  for (i in regions) {
+    u <- U_tbl[i, 5:(5 + nr_models), drop = FALSE]
+    m <- W_tbl[W_tbl$REG == i, 3:(2 + nr_models), drop = FALSE]
+    c1 <- rep(1.0, nrow(m))
+    m <- cbind(c1, m)
+
+    afc <- as.matrix(m) %*% t(u)
+    W_tbl[W_tbl$REG == i, "afc"] <- afc
   }
 
+  result <- list(W_tbl = W_tbl, U_tbl = U_tbl)
+  return(result)
 }
 
-AAFC_work_spatial <- function ()
+#
+# depends on W/U table format heavily
+#
+AAFC_RR_do_train <- function(W_tbl, U_tbl, nr_models)
 {
-  test
+  regions <- U_tbl[ , c("REG")]
+  nr_a <- nr_models + 1
+
+  for (i in regions) {
+    Ut <- U_tbl[i, 5:(5 + nr_models), drop = FALSE]
+    At_line <- U_tbl[i, (6 + nr_models):ncol(U_tbl), drop = FALSE]
+    m <- W_tbl[W_tbl$REG == i, 3:(2 + nr_models), drop = FALSE]
+    obs <- W_tbl[W_tbl$REG == i, "obs_0d", drop = FALSE]
+    c1 <- rep(1.0, nrow(m))
+    m <- cbind(c1, m)
+    nr_stations <- nrow(m)
+
+    if (nr_stations != U_tbl[i, "snr"]) {
+      stop("buggy nr_staions")
+    }
+    if (nr_stations < 1) {
+      stop("invalid nr_stations")
+    }
+
+    At_line <- as.vector(t(At_line))
+    At1 <- matrix(At_line, nrow = nr_a, ncol = nr_a, byrow = TRUE)
+    At1_NA <- matrix(rep(NA, nr_a ^ 2), nrow = nr_a)
+
+    for (j in 1:nr_stations) {
+      x <- m[j, ]
+      A <- t(x) %*% as.matrix(x)
+      At1 <- At1 + A
+    }
+
+    xy <- t(rep(0, nr_models + 1))
+    res <- rep(0, nr_stations)
+
+    for (j in 1:nr_stations) {
+      x <- m[j, ]
+      res[j] <- as.matrix(x) %*% t(Ut) - obs[j, 1]
+      xy <- xy + res[j] * x
+    }
+
+    library("MASS")
+    na1 <- is.na(At1)
+    if (length(na1[na1 == TRUE]) == 0) {
+      inv_At1 <- ginv(At1)
+    } else {
+      inv_At1 <- At1_NA
+    }
+
+    Ut1 <- t(Ut) - (inv_At1 %*% t(xy))
+    Ut1 <- t(Ut1)
+    At1_line <- matrix(t(At1), nrow = 1)
+
+    W_tbl[W_tbl$REG == i, "res"] <- res
+    U_tbl[i, 5:(5 + nr_models)] <- Ut1
+    U_tbl[i, (6 + nr_models):ncol(U_tbl)] <- At1_line
+    U_tbl[i, "sum_e"] <- sum(res)
+  }
+
+  result <- list(W_tbl = W_tbl, U_tbl = U_tbl)
+  return(result)
 }
 
-RR_predict <- function()
+AAFC_SS_do_predict <- function()
 {
 
 }
 
-RR_train <- function()
-{
-
-}
-
-SS_predict <- function()
-{
-
-}
-
-SS_train <- function()
+AAFC_SS_do_train <- function()
 {
 
 }
