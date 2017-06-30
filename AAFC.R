@@ -549,7 +549,13 @@ AAFC_gen_work_dir <- function(models_dir, subject, models_str, obs_str,
 #
 AAFC_work_temporal <- function(work_dir, work_name, subject, start_day, end_day,
                                nr_models, reset_work = FALSE, lambda = 0,
-                               do_predict = TRUE, do_train = TRUE)
+                               do_predict = TRUE,
+                               do_observe = TRUE,
+                               do_train = TRUE,
+                               AAFC_do_predict = AAFC_do_predict_RR,
+                               AAFC_do_observe = AAFC_do_observe_DP,
+                               AAFC_do_train = AAFC_do_train_RR,
+                               show_missing = FALSE)
 {
   # day indexes
   sday <- as.Date(start_day)
@@ -595,10 +601,6 @@ AAFC_work_temporal <- function(work_dir, work_name, subject, start_day, end_day,
     AAFC_rst_U_table(U_name[1], nr_models, lambda)
   }
 
-  # register process engine
-  AAFC_do_predict <- AAFC_RR_do_predict
-  AAFC_do_train <- AAFC_RR_do_train
-
   # work for each day
   U_tbl <- read.table(U_name[1], sep = ",", header = TRUE,
                           colClasses = U_col_classes,
@@ -606,27 +608,38 @@ AAFC_work_temporal <- function(work_dir, work_name, subject, start_day, end_day,
                           stringsAsFactors = FALSE)
 
   for (i in 1:nr_days) {
+    message("Processing ", day_idx[i], " --->")
+
     W_tbl <- read.table(W_name[i], sep = ",", header = TRUE,
                         colClasses = W_col_classes,
                         strip.white = TRUE,
                         stringsAsFactors = FALSE)
     W_tbl[W_tbl == -999] <- NA
 
+    update_W <- FALSE
+    update_U <- FALSE
+
     if (do_predict) {
-      result <- AAFC_do_predict(W_tbl, U_tbl, nr_models)
+      result <- AAFC_do_predict(W_tbl, U_tbl, nr_models, show_missing)
       W_tbl <- result$W_tbl
+      update_W <- TRUE
+    }
+    if (do_observe) {
+      #result <- AAFC_do_observe()
     }
     if (do_train) {
-      result <- AAFC_do_train(W_tbl, U_tbl, nr_models)
+      result <- AAFC_do_train(W_tbl, U_tbl, nr_models, show_missing)
       W_tbl <- result$W_tbl
       U_tbl <- result$U_tbl
+      update_W <- TRUE
+      update_U <- TRUE
     }
 
-    if (do_predict || do_train) {
+    if (update_W) {
       write.table(W_tbl, W_name[i], sep = ",", quote = FALSE,
                   row.names = FALSE, fileEncoding = "GBK")
     }
-    if (do_train) {
+    if (update_U) {
       write.table(U_tbl, U_name[i + 1], sep = ",", quote = FALSE,
                   row.names = FALSE, fileEncoding = "GBK")
     }
@@ -636,7 +649,7 @@ AAFC_work_temporal <- function(work_dir, work_name, subject, start_day, end_day,
 #
 # depends on W/U talbe format heavily
 #
-AAFC_RR_do_predict <- function(W_tbl, U_tbl, nr_models)
+AAFC_do_predict_RR <- function(W_tbl, U_tbl, nr_models, show_missing = FALSE)
 {
   regions <- U_tbl[ , c("REG")]
 
@@ -657,74 +670,75 @@ AAFC_RR_do_predict <- function(W_tbl, U_tbl, nr_models)
 #
 # depends on W/U table format heavily
 #
-AAFC_RR_do_train <- function(W_tbl, U_tbl, nr_models)
+AAFC_do_train_RR <- function(W_tbl, U_tbl, nr_models, show_missing = FALSE)
 {
+  library("MASS")
   regions <- U_tbl[ , c("REG")]
   nr_a <- nr_models + 1
 
+  missing_map_M <- rep(".", length(regions))
+  missing_map_O <- rep(".", length(regions))
+
   for (i in regions) {
+    # original data from data frame
     Ut <- U_tbl[i, 5:(5 + nr_models), drop = FALSE]
     At_line <- U_tbl[i, (6 + nr_models):ncol(U_tbl), drop = FALSE]
     m <- W_tbl[W_tbl$REG == i, 3:(2 + nr_models), drop = FALSE]
+    m <- cbind(rep(1.0, nrow(m)), m)  # add regression const col
     obs <- W_tbl[W_tbl$REG == i, "obs_0d", drop = FALSE]
-    c1 <- rep(1.0, nrow(m))
-    m <- cbind(c1, m)
-    nr_stations <- nrow(m)
 
-    if (nr_stations != U_tbl[i, "snr"]) {
-      stop("buggy nr_staions")
+    # check for data missing
+    data_missing <- FALSE
+    m_na <- is.na(m)
+    obs_na <- is.na(obs)
+    if (length(m_na[m_na == TRUE]) > 0) {
+      data_missing <- TRUE
+      missing_map_M[i] <- "N"
     }
-    if (nr_stations < 1) {
-      stop("invalid nr_stations")
-    }
-
-    At_line <- as.vector(t(At_line))
-    At1 <- matrix(At_line, nrow = nr_a, ncol = nr_a, byrow = TRUE)
-    At1_NA <- matrix(rep(NA, nr_a ^ 2), nrow = nr_a)
-
-    for (j in 1:nr_stations) {
-      x <- m[j, ]
-      A <- t(x) %*% as.matrix(x)
-      At1 <- At1 + A
+    if (length(obs_na[obs_na == TRUE]) > 0) {
+      data_missing <- TRUE
+      missing_map_O[i] <- "N"
     }
 
-    xy <- t(rep(0, nr_models + 1))
-    res <- rep(0, nr_stations)
+    # set to matrix format
+    Ut <- as.matrix(Ut)
+    At <- matrix(as.vector(t(At_line)), nrow = nr_a, ncol = nr_a, byrow = TRUE)
+    m <- as.matrix(m)
+    obs <- as.matrix(obs)
 
-    for (j in 1:nr_stations) {
-      x <- m[j, ]
-      res[j] <- as.matrix(x) %*% t(Ut) - obs[j, 1]
-      xy <- xy + res[j] * x
-    }
+    # calculate RES
+    res <- Ut %*% t(m) - t(obs)
 
-    library("MASS")
-    na1 <- is.na(At1)
-    if (length(na1[na1 == TRUE]) == 0) {
-      inv_At1 <- ginv(At1)
+    if (data_missing == FALSE) {
+      # calculate At1 and At1'
+      At1 <- At + t(m) %*% m
+      At1_inv <- ginv(At1)
+
+      # calculate Ut1
+      xy <- res %*% m
+      Ut1 <- Ut - xy %*% t(At1_inv)
     } else {
-      inv_At1 <- At1_NA
+      # keep old A/U
+      At1 <- At
+      Ut1 <- Ut
     }
 
-    Ut1 <- t(Ut) - (inv_At1 %*% t(xy))
-    Ut1 <- t(Ut1)
-    At1_line <- matrix(t(At1), nrow = 1)
-
-    W_tbl[W_tbl$REG == i, "res"] <- res
-    U_tbl[i, 5:(5 + nr_models)] <- Ut1
-    U_tbl[i, (6 + nr_models):ncol(U_tbl)] <- At1_line
+    # update to data frame
+    W_tbl[W_tbl$REG == i, "res"] <- as.vector(t(res))
     U_tbl[i, "sum_e"] <- sum(res)
+    U_tbl[i, 5:(5 + nr_models)] <- Ut1
+    At1_line <- matrix(t(At1), nrow = 1)
+    U_tbl[i, (6 + nr_models):ncol(U_tbl)] <- At1_line
   }
+
+  message("Missing_M: ", missing_map_M)
+  message("Missing_O: ", missing_map_O)
 
   result <- list(W_tbl = W_tbl, U_tbl = U_tbl)
   return(result)
 }
 
-AAFC_SS_do_predict <- function()
-{
-
-}
-
-AAFC_SS_do_train <- function()
+AAFC_do_observe_DP <- function()
 {
 
 }
