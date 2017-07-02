@@ -547,16 +547,27 @@ AAFC_gen_work_dir <- function(models_dir, subject, models_str, obs_str,
 # U table (for each day) -->
 # | REG | snr | sum_e | lambda | b0 | u1 | u2 | ... |  A1 |  A2 | ...
 #
-AAFC_work_temporal <- function(work_dir, work_name, subject, start_day, end_day,
-                               nr_models, reset_work = FALSE, lambda = 0,
+# Note: in working process, data missing in W table is set to NA
+# Sub_note: assumes in W table, obs column is named "obs_0d"
+# Sub_note: assumes in W table, obs follows the last model column
+#
+AAFC_work_temporal <- function(work_dir, work_name, subject,
+                               start_day, end_day,
+                               nr_models, afc_lookahead = 1,
+                               reset_work = FALSE, lambda = 0,
                                do_predict = TRUE,
                                do_observe = TRUE,
                                do_train = TRUE,
-                               AAFC_do_predict = AAFC_do_predict_RR,
-                               AAFC_do_observe = AAFC_do_observe_DP,
-                               AAFC_do_train = AAFC_do_train_RR,
+                               predict_handler = AAFC_do_predict_RR,
+                               observe_handler = AAFC_do_observe_NORMAL,
+                               train_handler = AAFC_do_train_RR,
                                show_missing = FALSE)
 {
+  # param check
+  if (afc_lookahead < 1) {
+    stop("Invalid afc_lookahead")
+  }
+
   # day indexes
   sday <- as.Date(start_day)
   eday <- as.Date(end_day)
@@ -566,12 +577,10 @@ AAFC_work_temporal <- function(work_dir, work_name, subject, start_day, end_day,
     eday <- tmp
   }
 
+  # U_tbl for extra afc_lookahead days
   nr_days <- difftime(eday, sday, units = "days") + 1
+  nr_idx_days <- nr_days + afc_lookahead
   day_seq_by <- "day"
-
-  #extra day for the latest new U_tbl
-  nr_idx_days <- nr_days + 1
-
   day_idx <- seq(sday, by = day_seq_by, length.out = nr_idx_days)
   day_idx <- format(day_idx, "%Y%m%d")
 
@@ -597,8 +606,10 @@ AAFC_work_temporal <- function(work_dir, work_name, subject, start_day, end_day,
   #   FALSE: continue with current sequence
   #
   if (reset_work) {
-    file.copy(U_default, U_name[1])
-    AAFC_rst_U_table(U_name[1], nr_models, lambda)
+    for (i in 1:afc_lookahead) {
+      file.copy(U_default, U_name[i])
+      AAFC_rst_U_table(U_name[i], nr_models, lambda)
+    }
   }
 
   # work for each day
@@ -620,18 +631,18 @@ AAFC_work_temporal <- function(work_dir, work_name, subject, start_day, end_day,
     update_U <- FALSE
 
     if (do_predict) {
-      result <- AAFC_do_predict(W_tbl, U_tbl, nr_models, show_missing)
+      result <- predict_handler(W_tbl, U_tbl, nr_models, show_missing)
       W_tbl <- result$W_tbl
       update_W <- TRUE
     }
     if (do_observe) {
-      #result <- AAFC_do_observe()
+      result <- observe_handler(W_tbl, U_tbl, nr_models, show_missing)
+      W_tbl <- result$W_tbl
+      update_W <- TRUE
     }
     if (do_train) {
-      result <- AAFC_do_train(W_tbl, U_tbl, nr_models, show_missing)
-      W_tbl <- result$W_tbl
+      result <- train_handler(W_tbl, U_tbl, nr_models, show_missing)
       U_tbl <- result$U_tbl
-      update_W <- TRUE
       update_U <- TRUE
     }
 
@@ -640,10 +651,28 @@ AAFC_work_temporal <- function(work_dir, work_name, subject, start_day, end_day,
                   row.names = FALSE, fileEncoding = "GBK")
     }
     if (update_U) {
-      write.table(U_tbl, U_name[i + 1], sep = ",", quote = FALSE,
+      write.table(U_tbl, U_name[i + afc_lookahead], sep = ",", quote = FALSE,
                   row.names = FALSE, fileEncoding = "GBK")
     }
   }
+}
+
+#
+# Note: assumes in W table, obs column is named "obs_0d"
+#
+AAFC_do_observe_NORMAL <- function(W_tbl, U_tbl, nr_models, show_missing = F)
+{
+  # add obs to W table
+  # need to do
+
+  # update res to W table
+  afc <- W_tbl[ , "afc"]
+  obs <- W_tbl[ , "obs_0d"]
+  res <- afc - obs
+  W_tbl[ , "res"] <- res
+
+  result <- list(W_tbl = W_tbl)
+  return(result)
 }
 
 #
@@ -654,51 +683,49 @@ AAFC_do_predict_RR <- function(W_tbl, U_tbl, nr_models, show_missing = FALSE)
   regions <- U_tbl[ , c("REG")]
 
   for (i in regions) {
-    u <- U_tbl[i, 5:(5 + nr_models), drop = FALSE]
+    # original data from data frame
+    u <- U_tbl[i, 5:(5 + nr_models), drop = FALSE] # b0, u(1..nr_models)
     m <- W_tbl[W_tbl$REG == i, 3:(2 + nr_models), drop = FALSE]
-    c1 <- rep(1.0, nrow(m))
-    m <- cbind(c1, m)
+    m <- cbind(rep(1.0, nrow(m)), m)  # add regression const col
 
-    afc <- as.matrix(m) %*% t(u)
-    W_tbl[W_tbl$REG == i, "afc"] <- afc
+    # set to matrix format
+    u <- as.matrix(u)
+    m <- as.matrix(m)
+
+    # calculate AFC
+    afc <- m %*% t(u)
+
+    # update to W table
+    W_tbl[W_tbl$REG == i, "afc"] <- as.vector(afc)
   }
 
-  result <- list(W_tbl = W_tbl, U_tbl = U_tbl)
+  result <- list(W_tbl = W_tbl)
   return(result)
 }
 
 #
 # depends on W/U table format heavily
 #
+# Note: assumes in W table, obs follows the last model column
+#
 AAFC_do_train_RR <- function(W_tbl, U_tbl, nr_models, show_missing = FALSE)
 {
   library("MASS")
   regions <- U_tbl[ , c("REG")]
   nr_a <- nr_models + 1
-
-  missing_map_M <- rep(".", length(regions))
-  missing_map_O <- rep(".", length(regions))
+  missing_map <- rep(".", length(regions))
 
   for (i in regions) {
     # original data from data frame
-    Ut <- U_tbl[i, 5:(5 + nr_models), drop = FALSE]
+    Ut <- U_tbl[i, 5:(5 + nr_models), drop = FALSE] # b0, u(1..nr_models)
     At_line <- U_tbl[i, (6 + nr_models):ncol(U_tbl), drop = FALSE]
-    m <- W_tbl[W_tbl$REG == i, 3:(2 + nr_models), drop = FALSE]
-    m <- cbind(rep(1.0, nrow(m)), m)  # add regression const col
-    obs <- W_tbl[W_tbl$REG == i, "obs_0d", drop = FALSE]
+    m_obs <- W_tbl[W_tbl$REG == i, 3:(3 + nr_models), drop = FALSE] # m, obs
+    m_obs <- cbind(rep(1.0, nrow(m_obs)), m_obs)  # add regression const col
 
-    # check for data missing
-    data_missing <- FALSE
-    m_na <- is.na(m)
-    obs_na <- is.na(obs)
-    if (length(m_na[m_na == TRUE]) > 0) {
-      data_missing <- TRUE
-      missing_map_M[i] <- "N"
-    }
-    if (length(obs_na[obs_na == TRUE]) > 0) {
-      data_missing <- TRUE
-      missing_map_O[i] <- "N"
-    }
+    # omit NA
+    m_obs_valid <- na.omit(m_obs)
+    m <- m_obs_valid[1:(ncol(m_obs_valid) - 1)]
+    obs <- m_obs_valid[ncol(m_obs_valid)]
 
     # set to matrix format
     Ut <- as.matrix(Ut)
@@ -706,10 +733,20 @@ AAFC_do_train_RR <- function(W_tbl, U_tbl, nr_models, show_missing = FALSE)
     m <- as.matrix(m)
     obs <- as.matrix(obs)
 
-    # calculate RES
-    res <- Ut %*% t(m) - t(obs)
+    # data missing check
+    full_snr <- nrow(m_obs)
+    valid_snr <- nrow(m_obs_valid)
+    if (valid_snr == 0) {
+      missing_map[i] <- "O"
+    } else if (valid_snr != full_snr) {
+      missing_map[i] <- "*"
+    }
 
-    if (data_missing == FALSE) {
+    # regression training
+    if (valid_snr > 0) {
+      # calculate RES
+      res <- Ut %*% t(m) - t(obs)
+
       # calculate At1 and At1'
       At1 <- At + t(m) %*% m
       At1_inv <- ginv(At1)
@@ -719,26 +756,24 @@ AAFC_do_train_RR <- function(W_tbl, U_tbl, nr_models, show_missing = FALSE)
       Ut1 <- Ut - xy %*% t(At1_inv)
     } else {
       # keep old A/U
+      res <- NA
       At1 <- At
       Ut1 <- Ut
     }
 
-    # update to data frame
-    W_tbl[W_tbl$REG == i, "res"] <- as.vector(t(res))
+    # update to U table
     U_tbl[i, "sum_e"] <- sum(res)
     U_tbl[i, 5:(5 + nr_models)] <- Ut1
     At1_line <- matrix(t(At1), nrow = 1)
     U_tbl[i, (6 + nr_models):ncol(U_tbl)] <- At1_line
   }
 
-  message("Missing_M: ", missing_map_M)
-  message("Missing_O: ", missing_map_O)
+  if (show_missing) {
+    message("Missing_T: ", missing_map)
+  }
 
   result <- list(W_tbl = W_tbl, U_tbl = U_tbl)
   return(result)
 }
 
-AAFC_do_observe_DP <- function()
-{
 
-}
