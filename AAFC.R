@@ -404,15 +404,17 @@ AAFC_gen_W_table <- function(src_dir, dst_dir, work_name, subject, xmodels_str,
 
 #
 # U table (for each day) -->
-# | REG | snr | sum_e | lambda | b0 | u1 | u2 | ... |  A1 |  A2 | ...
+# | REG | snr | snr_v | sum_e | avg_e | lambda | b0 | u1 | u2 |..| A11 | A12 |..
 #
-# REG = region
-# snr = number of stations in the region
-# sum_e = error summation of stations in the region
-# lambda = lambda used for ridge-regression
-# b0 = constant term of regression
-# u 1-N = weight for models of regression
-# A 11-(N+1)(N+1) = the X'X matrix of regression
+# REG               = region
+# snr               = number of stations in the region
+# snr_v             = valid stations (without data missing) in the region
+# sum_e             = error summation of stations in the region
+# avg_e             = average error value of valid staions in the region
+# lambda            = lambda used for ridge-regression
+# b0                = constant term of regression
+# u 1-N             = weight for models of regression
+# A 11-(N+1)(N+1)   = the X'X matrix of regression
 #
 AAFC_gen_U_table <- function(dst_dir, dst_file, models_str, REG_file)
 {
@@ -447,7 +449,11 @@ AAFC_gen_U_table <- function(dst_dir, dst_file, models_str, REG_file)
   }
 
   U_tbl <- cbind(U_tbl, tmp)
+  names(U_tbl)[ncol(U_tbl)] <- "snr_v"
+  U_tbl <- cbind(U_tbl, tmp)
   names(U_tbl)[ncol(U_tbl)] <- "sum_e"
+  U_tbl <- cbind(U_tbl, tmp)
+  names(U_tbl)[ncol(U_tbl)] <- "avg_e"
   U_tbl <- cbind(U_tbl, tmp)
   names(U_tbl)[ncol(U_tbl)] <- "lambda"
   U_tbl <- cbind(U_tbl, tmp)
@@ -481,30 +487,31 @@ AAFC_gen_U_table <- function(dst_dir, dst_file, models_str, REG_file)
 #
 AAFC_rst_U_table <- function(U_file, nr_models, lambda)
 {
-  U_col_names <- c("REG", "snr", "sum_e", "lambda", "b0")
+  U_fixed_names <- c("REG", "snr", "snr_v", "sum_e", "avg_e", "lambda", "b0")
+  U_fixed_cols <- length(U_fixed_names)
   U_ex_cols <- nr_models + ((nr_models + 1) ^ 2)
-  U_cols <- 5 + U_ex_cols
-  U_col_classes <- c("integer", "integer", "numeric", "integer", "numeric",
-                     rep("numeric", U_ex_cols))
+  U_cols <- U_fixed_cols + U_ex_cols
+  U_col_classes <- c("integer", "integer", "integer", "numeric", "numeric",
+                     "integer", "numeric", rep("numeric", U_ex_cols))
 
   U_tbl <- read.table(U_file, sep = ",", header = TRUE,
                       colClasses = U_col_classes,
                       strip.white = TRUE,
                       stringsAsFactors = FALSE)
 
-  if (!identical(names(U_tbl)[1:5], U_col_names)) {
+  if (!identical(names(U_tbl)[1:U_fixed_cols], U_fixed_names)) {
     stop("seems U_file is not a U table")
   }
   if (ncol(U_tbl) != U_cols) {
     stop("seems U_file is not a U table")
   }
 
-  U_tbl[ , 6:U_cols] <- 0
+  U_tbl[ , (U_fixed_cols + 1):U_cols] <- 0
 
   U_tbl[ , c("lambda")] <- lambda
 
   nr_a <- nr_models + 1
-  idx_a <- 5 + nr_models
+  idx_a <- U_fixed_cols + nr_models
   for (i in 1:nr_a) {
     for (j in 1:nr_a) {
       idx_a <- idx_a + 1
@@ -545,7 +552,7 @@ AAFC_gen_work_dir <- function(models_dir, subject, models_str, obs_str,
 # | REG | SID | model1 | model2 | ... | obs | afc | res |
 #
 # U table (for each day) -->
-# | REG | snr | sum_e | lambda | b0 | u1 | u2 | ... |  A1 |  A2 | ...
+# | REG | snr | snr_v | sum_e | avg_e | lambda | b0 | u1 | u2 |..| A11 | A12 |..
 #
 # Note: in working process, data missing in W table is set to NA
 # Sub_note: assumes in W table, obs column is named "obs_0d"
@@ -596,10 +603,12 @@ AAFC_work_temporal <- function(work_dir, work_name, subject,
   W_ex_cols <- nr_models + 3
   W_col_classes <- c("integer", "character", rep("numeric", W_ex_cols))
 
-  U_col_names <- c("REG", "snr", "sum_e", "lambda", "b0")
+  U_fixed_names <- c("REG", "snr", "snr_v", "sum_e", "avg_e", "lambda", "b0")
+  U_fixed_cols <- length(U_fixed_names)
   U_ex_cols <- nr_models + ((nr_models + 1) ^ 2)
-  U_col_classes <- c("integer", "integer", "numeric", "integer", "numeric",
-                     rep("numeric", U_ex_cols))
+  U_cols <- U_fixed_cols + U_ex_cols
+  U_col_classes <- c("integer", "integer", "integer", "numeric", "numeric",
+                     "integer", "numeric", rep("numeric", U_ex_cols))
 
   # reset_work
   #   TRUE: start new sequence
@@ -607,7 +616,7 @@ AAFC_work_temporal <- function(work_dir, work_name, subject,
   #
   if (reset_work) {
     for (i in 1:afc_lookahead) {
-      file.copy(U_default, U_name[i])
+      file.copy(U_default, U_name[i], overwrite = T)
       AAFC_rst_U_table(U_name[i], nr_models, lambda)
     }
   }
@@ -676,16 +685,29 @@ AAFC_do_observe_NORMAL <- function(W_tbl, U_tbl, nr_models, show_missing = F)
 }
 
 #
-# depends on W/U talbe format heavily
+# W table (for each day) -->
+# | REG | SID | model1 | model2 | ... | obs | afc | res |
+#
+# U table (for each day) -->
+# | REG | snr | snr_v | sum_e | avg_e | lambda | b0 | u1 | u2 |..| A11 | A12 |..
 #
 AAFC_do_predict_RR <- function(W_tbl, U_tbl, nr_models, show_missing = FALSE)
 {
+  # col indexes
+  W_col_names <- names(W_tbl)
+  U_col_names <- names(U_tbl)
+  idx_SID <- which(W_col_names == "SID")[1]
+  idx_m <- idx_SID + 1
+  idx_b0 <- which(U_col_names == "b0")[1]
+  idx_u <- idx_b0 + 1
+  idx_a <- which(U_col_names == "A_11")[1]
+
   regions <- U_tbl[ , c("REG")]
 
   for (i in regions) {
     # original data from data frame
-    u <- U_tbl[i, 5:(5 + nr_models), drop = FALSE] # b0, u(1..nr_models)
-    m <- W_tbl[W_tbl$REG == i, 3:(2 + nr_models), drop = FALSE]
+    u <- U_tbl[i, idx_b0:(idx_b0 + nr_models), drop = F] # b0, u(1..nr_models)
+    m <- W_tbl[W_tbl$REG == i, idx_m:(idx_m + nr_models - 1), drop = F]
     m <- cbind(rep(1.0, nrow(m)), m)  # add regression const col
 
     # set to matrix format
@@ -704,7 +726,11 @@ AAFC_do_predict_RR <- function(W_tbl, U_tbl, nr_models, show_missing = FALSE)
 }
 
 #
-# depends on W/U table format heavily
+# W table (for each day) -->
+# | REG | SID | model1 | model2 | ... | obs | afc | res |
+#
+# U table (for each day) -->
+# | REG | snr | snr_v | sum_e | avg_e | lambda | b0 | u1 | u2 |..| A11 | A12 |..
 #
 # Note: assumes in W table, obs follows the last model column
 #
@@ -715,11 +741,20 @@ AAFC_do_train_RR <- function(W_tbl, U_tbl, nr_models, show_missing = FALSE)
   nr_a <- nr_models + 1
   missing_map <- rep(".", length(regions))
 
+  # col indexes
+  W_col_names <- names(W_tbl)
+  U_col_names <- names(U_tbl)
+  idx_SID <- which(W_col_names == "SID")[1]
+  idx_m <- idx_SID + 1
+  idx_b0 <- which(U_col_names == "b0")[1]
+  idx_u <- idx_b0 + 1
+  idx_a <- which(U_col_names == "A_11")[1]
+
   for (i in regions) {
     # original data from data frame
-    Ut <- U_tbl[i, 5:(5 + nr_models), drop = FALSE] # b0, u(1..nr_models)
-    At_line <- U_tbl[i, (6 + nr_models):ncol(U_tbl), drop = FALSE]
-    m_obs <- W_tbl[W_tbl$REG == i, 3:(3 + nr_models), drop = FALSE] # m, obs
+    Ut <- U_tbl[i, idx_b0:(idx_b0 + nr_models), drop = F] # b0, u(1..nr_models)
+    At_line <- U_tbl[i, idx_a:(idx_a + nr_a ^ 2 - 1), drop = F]
+    m_obs <- W_tbl[W_tbl$REG == i, idx_m:(idx_m + nr_models), drop = F] # m, obs
     m_obs <- cbind(rep(1.0, nrow(m_obs)), m_obs)  # add regression const col
 
     # omit NA
@@ -729,7 +764,7 @@ AAFC_do_train_RR <- function(W_tbl, U_tbl, nr_models, show_missing = FALSE)
 
     # set to matrix format
     Ut <- as.matrix(Ut)
-    At <- matrix(as.vector(t(At_line)), nrow = nr_a, ncol = nr_a, byrow = TRUE)
+    At <- matrix(as.vector(t(At_line)), nrow = nr_a, ncol = nr_a, byrow = T)
     m <- as.matrix(m)
     obs <- as.matrix(obs)
 
@@ -762,10 +797,12 @@ AAFC_do_train_RR <- function(W_tbl, U_tbl, nr_models, show_missing = FALSE)
     }
 
     # update to U table
+    U_tbl[i, "snr_v"] <- valid_snr
     U_tbl[i, "sum_e"] <- sum(res)
-    U_tbl[i, 5:(5 + nr_models)] <- Ut1
+    U_tbl[i, "avg_e"] <- mean(res)
+    U_tbl[i, idx_b0:(idx_b0 + nr_models)] <- Ut1
     At1_line <- matrix(t(At1), nrow = 1)
-    U_tbl[i, (6 + nr_models):ncol(U_tbl)] <- At1_line
+    U_tbl[i, idx_a:(idx_a + nr_a ^ 2 - 1)] <- At1_line
   }
 
   if (show_missing) {
