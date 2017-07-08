@@ -404,13 +404,16 @@ AAFC_gen_W_table <- function(src_dir, dst_dir, work_name, subject, xmodels_str,
 
 #
 # U table (for each day) -->
-# | REG | snr | snr_v | sum_e | avg_e | lambda | b0 | u1 | u2 |..| A11 | A12 |..
+# | REG | snr | snr_v | avg_afc | avg_obs | avg_e | sum_se | lambda |
+# | b0 | u1 | u2 | .. | A11 | A12 | ..
 #
 # REG               = region
 # snr               = number of stations in the region
 # snr_v             = valid stations (without data missing) in the region
-# sum_e             = error summation of stations in the region
+# avg_afc           = average afc value of valid stations in the region
+# avg_obs           = average obs value of valid stations in the region
 # avg_e             = average error value of valid staions in the region
+# sum_se            = summation of squared error of valid stations in the region
 # lambda            = lambda used for ridge-regression
 # b0                = constant term of regression
 # u 1-N             = weight for models of regression
@@ -451,9 +454,13 @@ AAFC_gen_U_table <- function(dst_dir, dst_file, models_str, REG_file)
   U_tbl <- cbind(U_tbl, tmp)
   names(U_tbl)[ncol(U_tbl)] <- "snr_v"
   U_tbl <- cbind(U_tbl, tmp)
-  names(U_tbl)[ncol(U_tbl)] <- "sum_e"
+  names(U_tbl)[ncol(U_tbl)] <- "avg_afc"
+  U_tbl <- cbind(U_tbl, tmp)
+  names(U_tbl)[ncol(U_tbl)] <- "avg_obs"
   U_tbl <- cbind(U_tbl, tmp)
   names(U_tbl)[ncol(U_tbl)] <- "avg_e"
+  U_tbl <- cbind(U_tbl, tmp)
+  names(U_tbl)[ncol(U_tbl)] <- "sum_se"
   U_tbl <- cbind(U_tbl, tmp)
   names(U_tbl)[ncol(U_tbl)] <- "lambda"
   U_tbl <- cbind(U_tbl, tmp)
@@ -485,14 +492,20 @@ AAFC_gen_U_table <- function(dst_dir, dst_file, models_str, REG_file)
 #   1) set all values to 0, except for col "REG" and "snr"
 #   2) set col "lambda" and related "Axx" to lambda
 #
+# U table (for each day) -->
+# | REG | snr | snr_v | avg_afc | avg_obs | avg_e | sum_se | lambda |
+# | b0 | u1 | u2 | .. | A11 | A12 | ..
+#
 AAFC_rst_U_table <- function(U_file, nr_models, lambda)
 {
-  U_fixed_names <- c("REG", "snr", "snr_v", "sum_e", "avg_e", "lambda", "b0")
+  U_fixed_names <- c("REG", "snr", "snr_v", "avg_afc", "avg_obs", "avg_e",
+                     "sum_se", "lambda", "b0")
   U_fixed_cols <- length(U_fixed_names)
   U_ex_cols <- nr_models + ((nr_models + 1) ^ 2)
   U_cols <- U_fixed_cols + U_ex_cols
   U_col_classes <- c("integer", "integer", "integer", "numeric", "numeric",
-                     "integer", "numeric", rep("numeric", U_ex_cols))
+                     "numeric", "numeric", "integer", "numeric",
+                     rep("numeric", U_ex_cols))
 
   U_tbl <- read.table(U_file, sep = ",", header = TRUE,
                       colClasses = U_col_classes,
@@ -552,11 +565,19 @@ AAFC_gen_work_dir <- function(models_dir, subject, models_str, obs_str,
 # | REG | SID | model1 | model2 | ... | obs | afc | res |
 #
 # U table (for each day) -->
-# | REG | snr | snr_v | sum_e | avg_e | lambda | b0 | u1 | u2 |..| A11 | A12 |..
+# | REG | snr | snr_v | avg_afc | avg_obs | avg_e | sum_se | lambda |
+# | b0 | u1 | u2 | .. | A11 | A12 | ..
 #
 # Note: in working process, data missing in W table is set to NA
 # Sub_note: assumes in W table, obs column is named "obs_0d"
 # Sub_note: assumes in W table, obs follows the last model column
+#
+# afc_lookahead: AFC forecast period (predicted day - observed day)
+#
+# to handle afc_lookahead, use copy of U_tbl for different operations
+# UP_tbl for predict, saved to the day to be predicted
+# UT_tbl for training, saved to the next day of current day
+# US_tbl for training statistic convenience, saved to current day
 #
 AAFC_work_temporal <- function(work_dir, work_name, subject,
                                start_day, end_day,
@@ -590,12 +611,15 @@ AAFC_work_temporal <- function(work_dir, work_name, subject,
   day_seq_by <- "day"
   day_idx <- seq(sday, by = day_seq_by, length.out = nr_idx_days)
   day_idx <- format(day_idx, "%Y%m%d")
+  day_prefix <- "D"
+  day_prefix_idx <- paste(day_prefix, day_idx, sep = "")
 
   # file names
-  day_prefix <- "D"
-  W_name <- sprintf("%s/%s_%s_%s%s.csv", work_dir, work_name, subject,
-                    day_prefix, day_idx)
-  U_name <- sprintf("%s/U/U_%s%s.csv", work_dir, day_prefix, day_idx)
+  W_name <- sprintf("%s/%s_%s_%s.csv", work_dir, work_name, subject,
+                    day_prefix_idx)
+  UP_name <- sprintf("%s/U/UP_%s.csv", work_dir, day_prefix_idx)
+  UT_name <- sprintf("%s/U/UT_%s.csv", work_dir, day_prefix_idx)
+  US_name <- sprintf("%s/U/US_%s.csv", work_dir, day_prefix_idx)
   U_default <- sprintf("%s/U/U.csv", work_dir)
 
   # prepare for W/U file
@@ -603,32 +627,44 @@ AAFC_work_temporal <- function(work_dir, work_name, subject,
   W_ex_cols <- nr_models + 3
   W_col_classes <- c("integer", "character", rep("numeric", W_ex_cols))
 
-  U_fixed_names <- c("REG", "snr", "snr_v", "sum_e", "avg_e", "lambda", "b0")
+  U_fixed_names <- c("REG", "snr", "snr_v", "avg_afc", "avg_obs", "avg_e",
+                     "sum_se", "lambda", "b0")
   U_fixed_cols <- length(U_fixed_names)
   U_ex_cols <- nr_models + ((nr_models + 1) ^ 2)
   U_cols <- U_fixed_cols + U_ex_cols
   U_col_classes <- c("integer", "integer", "integer", "numeric", "numeric",
-                     "integer", "numeric", rep("numeric", U_ex_cols))
+                     "numeric", "numeric", "integer", "numeric",
+                     rep("numeric", U_ex_cols))
 
   # reset_work
   #   TRUE: start new sequence
   #   FALSE: continue with current sequence
   #
   if (reset_work) {
+    AAFC_rst_U_table(U_default, nr_models, lambda)
+    file.copy(U_default, UT_name[1], overwrite = T)
     for (i in 1:afc_lookahead) {
-      file.copy(U_default, U_name[i], overwrite = T)
-      AAFC_rst_U_table(U_name[i], nr_models, lambda)
+      file.copy(U_default, UP_name[i], overwrite = T)
     }
   }
 
   # work for each day
-  U_tbl <- read.table(U_name[1], sep = ",", header = TRUE,
+  UT_tbl <- read.table(UT_name[1], sep = ",", header = TRUE,
                           colClasses = U_col_classes,
                           strip.white = TRUE,
                           stringsAsFactors = FALSE)
 
   for (i in 1:nr_days) {
     message("Processing ", day_idx[i], " --->")
+
+    if (afc_lookahead == 1) {
+      UP_tbl <- UT_tbl
+    } else {
+      UP_tbl <- read.table(UP_name[i], sep = ",", header = TRUE,
+                          colClasses = U_col_classes,
+                          strip.white = TRUE,
+                          stringsAsFactors = FALSE)
+    }
 
     W_tbl <- read.table(W_name[i], sep = ",", header = TRUE,
                         colClasses = W_col_classes,
@@ -639,29 +675,33 @@ AAFC_work_temporal <- function(work_dir, work_name, subject,
     update_W <- FALSE
     update_U <- FALSE
 
+    # data process
     if (do_predict) {
-      result <- predict_handler(W_tbl, U_tbl, nr_models, show_missing)
+      result <- predict_handler(W_tbl, UP_tbl, nr_models, show_missing)
       W_tbl <- result$W_tbl
       update_W <- TRUE
     }
     if (do_observe) {
-      result <- observe_handler(W_tbl, U_tbl, nr_models, show_missing)
+      result <- observe_handler(W_tbl, UP_tbl, nr_models, show_missing)
       W_tbl <- result$W_tbl
       update_W <- TRUE
     }
     if (do_train) {
-      result <- train_handler(W_tbl, U_tbl, nr_models, show_missing)
-      U_tbl <- result$U_tbl
+      result <- train_handler(W_tbl, UT_tbl, nr_models, show_missing)
+      UT_tbl <- result$U_tbl
       update_U <- TRUE
     }
 
+    # file update
     if (update_W) {
       write.table(W_tbl, W_name[i], sep = ",", quote = FALSE,
                   row.names = FALSE, fileEncoding = "GBK")
     }
     if (update_U) {
-      write.table(U_tbl, U_name[i + afc_lookahead], sep = ",", quote = FALSE,
+      write.table(UT_tbl, UT_name[i + 1], sep = ",", quote = FALSE,
                   row.names = FALSE, fileEncoding = "GBK")
+      file.copy(UT_name[i + 1], UP_name[i + afc_lookahead], overwrite = T)
+      file.copy(UT_name[i + 1], US_name[i], overwrite = T)
     }
   }
 }
@@ -680,8 +720,8 @@ AAFC_do_observe_NORMAL <- function(W_tbl, U_tbl, nr_models, show_missing = F)
   res <- afc - obs
   W_tbl[ , "res"] <- res
 
-  result <- list(W_tbl = W_tbl)
-  return(result)
+  ret_list <- list(W_tbl = W_tbl)
+  return(ret_list)
 }
 
 #
@@ -689,7 +729,8 @@ AAFC_do_observe_NORMAL <- function(W_tbl, U_tbl, nr_models, show_missing = F)
 # | REG | SID | model1 | model2 | ... | obs | afc | res |
 #
 # U table (for each day) -->
-# | REG | snr | snr_v | sum_e | avg_e | lambda | b0 | u1 | u2 |..| A11 | A12 |..
+# | REG | snr | snr_v | avg_afc | avg_obs | avg_e | sum_se | lambda |
+# | b0 | u1 | u2 | .. | A11 | A12 | ..
 #
 AAFC_do_predict_RR <- function(W_tbl, U_tbl, nr_models, show_missing = FALSE)
 {
@@ -721,8 +762,8 @@ AAFC_do_predict_RR <- function(W_tbl, U_tbl, nr_models, show_missing = FALSE)
     W_tbl[W_tbl$REG == i, "afc"] <- as.vector(afc)
   }
 
-  result <- list(W_tbl = W_tbl)
-  return(result)
+  ret_list <- list(W_tbl = W_tbl)
+  return(ret_list)
 }
 
 #
@@ -730,7 +771,8 @@ AAFC_do_predict_RR <- function(W_tbl, U_tbl, nr_models, show_missing = FALSE)
 # | REG | SID | model1 | model2 | ... | obs | afc | res |
 #
 # U table (for each day) -->
-# | REG | snr | snr_v | sum_e | avg_e | lambda | b0 | u1 | u2 |..| A11 | A12 |..
+# | REG | snr | snr_v | avg_afc | avg_obs | avg_e | sum_se | lambda |
+# | b0 | u1 | u2 | .. | A11 | A12 | ..
 #
 # Note: assumes in W table, obs follows the last model column
 #
@@ -780,7 +822,8 @@ AAFC_do_train_RR <- function(W_tbl, U_tbl, nr_models, show_missing = FALSE)
     # regression training
     if (valid_snr > 0) {
       # calculate RES
-      res <- Ut %*% t(m) - t(obs)
+      afc <- Ut %*% t(m)
+      res <- afc - t(obs)
 
       # calculate At1 and At1'
       At1 <- At + t(m) %*% m
@@ -791,6 +834,8 @@ AAFC_do_train_RR <- function(W_tbl, U_tbl, nr_models, show_missing = FALSE)
       Ut1 <- Ut - xy %*% t(At1_inv)
     } else {
       # keep old A/U
+      afc <- NA
+      obs <- NA
       res <- NA
       At1 <- At
       Ut1 <- Ut
@@ -798,8 +843,10 @@ AAFC_do_train_RR <- function(W_tbl, U_tbl, nr_models, show_missing = FALSE)
 
     # update to U table
     U_tbl[i, "snr_v"] <- valid_snr
-    U_tbl[i, "sum_e"] <- sum(res)
+    U_tbl[i, "avg_afc"] <- mean(afc)
+    U_tbl[i, "avg_obs"] <- mean(obs)
     U_tbl[i, "avg_e"] <- mean(res)
+    U_tbl[i, "sum_se"] <- sum(res ^ 2)
     U_tbl[i, idx_b0:(idx_b0 + nr_models)] <- Ut1
     At1_line <- matrix(t(At1), nrow = 1)
     U_tbl[i, idx_a:(idx_a + nr_a ^ 2 - 1)] <- At1_line
@@ -809,8 +856,97 @@ AAFC_do_train_RR <- function(W_tbl, U_tbl, nr_models, show_missing = FALSE)
     message("Missing_T: ", missing_map)
   }
 
-  result <- list(W_tbl = W_tbl, U_tbl = U_tbl)
-  return(result)
+  ret_list <- list(W_tbl = W_tbl, U_tbl = U_tbl)
+  return(ret_list)
+}
+
+AAFC_training_temporal <- function(work_dir, work_name, subject,
+                                   start_day, end_day,
+                                   nr_models, afc_lookahead = 1,
+                                   reset_work = FALSE, lambda = 0,
+                                   do_predict = TRUE,
+                                   do_observe = TRUE,
+                                   do_train = TRUE,
+                                   predict_handler = AAFC_do_predict_RR,
+                                   observe_handler = AAFC_do_observe_NORMAL,
+                                   train_handler = AAFC_do_train_RR,
+                                   show_missing = FALSE)
+{
+  # params
+  lambda_start = 0
+  lambda_end = 10000
+  lambda_step = 100
+
+  lambda_list <- rep()
+  mse <- rep()
+
+  for (i in lambda_list) {
+    AAFC_work_temporal()
+    #AAFC_W_serialize()
+    #AAFC_U_serialize()
+  }
+
+  # check lambda for min-value of destination
+
+  # use that lambda to run work
+
+}
+
+#
+# a common process to serialize day-divided tables with same format
+#
+# Note: data directly combined without merge, remember to check
+# serialized keys to verify data consistency
+#
+AAFC_table_serialize <- function(src_dir, src_prefix, dst_dir, dst_prefix,
+                                 start_day, end_day)
+{
+  # day index
+  sday <- as.Date(start_day)
+  eday <- as.Date(end_day)
+  if (sday <= eday) {
+    nr_days <- difftime(eday, sday, units = "days") + 1
+    day_seq_by <- "day"
+  } else {
+    nr_days <- difftime(sday, eday, units = "days") + 1
+    day_seq_by <- "-1 day"
+  }
+  day_idx <- seq(sday, by = day_seq_by, length.out = nr_days)
+  day_idx <- format(day_idx, "%Y%m%d")
+  day_prefix <- "D"
+  day_prefix_idx <- paste(day_prefix, day_idx, sep = "")
+
+  # src_file names
+  src_name <- sprintf("%s/%s%s.csv", src_dir, src_prefix, day_prefix_idx)
+
+  # read in all src_file
+  src_list <- list()
+  for (i in 1:nr_days) {
+    message("Reading ", src_name[i])
+    tbl <- read.table(src_name[i], sep = ",", header = TRUE,
+                        stringsAsFactors = FALSE)
+    src_list <- append(src_list, list(tbl))
+  }
+
+  # col select function
+  sel_col <- function(x, col_idx) x[ , col_idx]
+
+  # serialize by column
+  nr_col <- ncol(src_list[[1]])
+  dst_var <- names(src_list[[1]])
+  dst_name <- sprintf("%s/%s%s.csv", dst_dir, dst_prefix, dst_var)
+
+  if (dir.exists(dst_dir) == FALSE) {
+    dir.create(dst_dir)
+  }
+
+  for (i in 1:nr_col) {
+    message("Writing ", dst_name[i])
+    tbl <- as.data.frame(sapply(src_list, sel_col, i))
+    names(tbl) <- day_prefix_idx
+    write.table(tbl, dst_name[i], sep = ",", quote = FALSE,
+                row.names = FALSE, fileEncoding = "GBK")
+  }
 }
 
 
