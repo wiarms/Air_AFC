@@ -860,7 +860,13 @@ AAFC_do_train_RR <- function(W_tbl, U_tbl, nr_models, show_missing = FALSE)
   return(ret_list)
 }
 
-AAFC_training_temporal <- function(work_dir, work_name, subject,
+#
+# hyper training process, find best param for regression
+#
+# currently use region RMSE to estimate lambda, see
+# AAFC_analyse_temporal() for definition of region RMSE
+#
+AAFC_hyper_training <- function(work_dir, work_name, subject,
                                    start_day, end_day,
                                    nr_models, afc_lookahead = 1,
                                    reset_work = FALSE, lambda = 0,
@@ -870,26 +876,198 @@ AAFC_training_temporal <- function(work_dir, work_name, subject,
                                    predict_handler = AAFC_do_predict_RR,
                                    observe_handler = AAFC_do_observe_NORMAL,
                                    train_handler = AAFC_do_train_RR,
-                                   show_missing = FALSE)
+                                   show_missing = FALSE,
+                                   lambda_start = 0,
+                                   lambda_end = 10000,
+                                   lambda_step = 100)
 {
   # params
-  lambda_start = 0
-  lambda_end = 10000
-  lambda_step = 100
+  lambda_seq <- seq(lambda_start, lambda_end, lambda_step)
+  rmse_list <- list()
+  mae_list <- list()
 
-  lambda_list <- rep()
-  mse <- rep()
+  # training & analyzing rounds
+  for (lambda_x in lambda_seq) {
+    message("\n\n[*] Hyper training with lambda = ", lambda_x)
+    AAFC_work_temporal(work_dir = work_dir,
+                       work_name = work_name,
+                       subject = subject,
+                       start_day = start_day,
+                       end_day = end_day,
+                       nr_models = nr_models,
+                       afc_lookahead = afc_lookahead,
+                       reset_work = reset_work,
+                       lambda = lambda_x,
+                       do_predict = do_predict,
+                       do_observe = do_observe,
+                       do_train = do_train,
+                       predict_handler = predict_handler,
+                       observe_handler = observe_handler,
+                       train_handler = train_handler,
+                       show_missing = show_missing)
 
-  for (i in lambda_list) {
-    AAFC_work_temporal()
-    #AAFC_W_serialize()
-    #AAFC_U_serialize()
+    message("[*] Round result analyzing")
+    ret <- AAFC_analyse_temporal(work_dir, start_day, end_day)
+    rmse_reg <- ret$RMSE
+    mae_reg <- ret$MAE
+
+    # append to list
+    rmse_list <- append(rmse_list, list(rmse_reg))
+    mae_list <- append(mae_list, list(mae_reg))
   }
 
-  # check lambda for min-value of destination
+  message("\n\n[*] Hyper analyzing")
 
-  # use that lambda to run work
+  # serializing test data
+  sel <- function(x) x
+  rmse_tbl <- as.data.frame(sapply(rmse_list, sel))
+  mae_tbl <- as.data.frame(sapply(mae_list, sel))
+  names(rmse_tbl) <- paste("lambda_", lambda_seq, sep = "")
+  names(mae_tbl) <- paste("lambda_", lambda_seq, sep = "")
 
+  # test data file name
+  sday <- format(as.Date(start_day), "%Y%m%d")
+  eday <- format(as.Date(end_day), "%Y%m%d")
+  test_name <- sprintf("%s-%s", sday, eday)
+  P_dir <- paste(work_dir, "/P", sep = "")
+  RMSE_file <- paste(P_dir, "/", test_name, "_RMSE.csv", sep = "")
+  MAE_file <- paste(P_dir, "/", test_name, "_MAE.csv", sep = "")
+  lambda_v_file <- paste(P_dir, "/", test_name, "_lambda_v.csv", sep = "")
+
+  if (dir.exists(P_dir) == FALSE) {
+    dir.create(P_dir)
+  }
+
+  # merge test data with exist file
+  if (file.exists(RMSE_file)) {
+    message("Reading ", RMSE_file)
+    rmse_old_tbl <- read.table(RMSE_file, sep = ",", header = TRUE,
+                               stringsAsFactors = FALSE)
+    for (i in names(rmse_tbl)) {
+      rmse_old_tbl[i] <- rmse_tbl[i]
+    }
+    rmse_tbl <- rmse_old_tbl
+  }
+
+  if (file.exists(MAE_file)) {
+    message("Reading ", MAE_file)
+    mae_old_tbl <- read.table(MAE_file, sep = ",", header = TRUE,
+                              stringsAsFactors = FALSE)
+    for (i in names(mae_tbl)) {
+      mae_old_tbl[i] <- mae_tbl[i]
+    }
+    mae_tbl <- mae_old_tbl
+  }
+
+  # save test data to file
+  message("Writing ", RMSE_file)
+  write.table(rmse_tbl, RMSE_file, sep = ",", quote = FALSE,
+              row.names = FALSE, fileEncoding = "GBK")
+  message("Writing ", MAE_file)
+  write.table(mae_tbl, MAE_file, sep = ",", quote = FALSE,
+              row.names = FALSE, fileEncoding = "GBK")
+
+  # calculate best lambda_v
+  sel2 <- function(x) x[2]
+  rmse_tbl[is.na(rmse_tbl)] <- Inf
+  idx_v <- apply(rmse_tbl, 1, which.min)
+  str_v <- names(rmse_tbl)[idx_v]
+  str_v <- strsplit(str_v, "_")
+  str_v <- sapply(str_v, sel2)
+  rmse_lambda_v <- as.numeric(str_v)
+
+  mae_tbl[is.na(mae_tbl)] <- Inf
+  idx_v <- apply(mae_tbl, 1, which.min)
+  str_v <- names(mae_tbl)[idx_v]
+  str_v <- strsplit(str_v, "_")
+  str_v <- sapply(str_v, sel2)
+  mae_lambda_v <- as.numeric(str_v)
+
+  # save lambda_v_tbl to file
+  message("Writing ", lambda_v_file)
+  lambda_v_tbl <- data.frame(rmse_lambda_v, mae_lambda_v)
+  write.table(lambda_v_tbl, lambda_v_file, sep = ",", quote = FALSE,
+              row.names = FALSE, fileEncoding = "GBK")
+
+  # use default lambda_v (here is rmse_lambda_v) to run work
+  lambda_v <- rmse_lambda_v
+  message("\n\n[*] Hyper training with lambda_v")
+  AAFC_work_temporal(work_dir = work_dir,
+                     work_name = work_name,
+                     subject = subject,
+                     start_day = start_day,
+                     end_day = end_day,
+                     nr_models = nr_models,
+                     afc_lookahead = afc_lookahead,
+                     reset_work = reset_work,
+                     lambda = lambda_v,
+                     do_predict = do_predict,
+                     do_observe = do_observe,
+                     do_train = do_train,
+                     predict_handler = predict_handler,
+                     observe_handler = observe_handler,
+                     train_handler = train_handler,
+                     show_missing = show_missing)
+
+  message("[*] Round result analyzing")
+  AAFC_analyse_temporal(work_dir, start_day, end_day)
+}
+
+#
+# Analyse AAFC work results, targets include RMSE and MAE
+#
+# Note: RMSE of region is calculated by all valid stations in the region
+#       individually, not related to any average results of that region
+# Note: MAE of region is calculated based on average results of the region
+#
+AAFC_analyse_temporal <- function(work_dir, start_day, end_day)
+{
+  # data dir
+  U_dir <- paste(work_dir, "/U", sep = "")
+  S_dir <- paste(work_dir, "/U/S", sep = "")
+
+  # serialize statitics files
+  SS_prefix <- "US_"
+  AAFC_table_serialize(U_dir, SS_prefix, S_dir, SS_prefix, start_day, end_day,
+                       select = c("snr_v", "avg_e", "sum_se"))
+  SNR_file <- paste(S_dir, "/", SS_prefix, "snr_v", ".csv", sep = "")
+  SE_file <- paste(S_dir, "/", SS_prefix, "sum_se", ".csv", sep = "")
+  AE_file <- paste(S_dir, "/", SS_prefix, "avg_e", ".csv", sep = "")
+
+  # read in statistics tables
+  SNR_tbl <- read.table(SNR_file, sep = ",", header = T, stringsAsFactors = F)
+  SE_tbl <- read.table(SE_file, sep = ",", header = T, stringsAsFactors = F)
+  AE_tbl <- read.table(AE_file, sep = ",", header = T, stringsAsFactors = F)
+
+  SNR <- as.matrix(SNR_tbl)
+  SE <- as.matrix(SE_tbl)
+  AE <- abs(as.matrix(AE_tbl))
+
+  AEV <- AE
+  AEV[!is.na(AEV)] <- 1
+  AEV[is.na(AEV)] <- 0
+
+  # sum to region
+  snr_reg <- apply(SNR, 1, sum)
+  snr_reg[snr_reg == 0] <- NA
+  se_reg <- apply(SE, 1, sum, na.rm = T)
+  aev_reg <- apply(AEV, 1, sum)
+  aev_reg[aev_reg == 0] <- NA
+  ae_reg <- apply(AE, 1, sum, na.rm = T)
+
+  # calculate RMSE/MAE
+  RMSE <- sqrt(se_reg / snr_reg)
+  MAE <- ae_reg / aev_reg
+
+  # save analyse results
+  analyse_tbl <- data.frame(RMSE, MAE)
+  analyse_file <- paste(S_dir, "/", SS_prefix, "ANALYSE", ".csv", sep = "")
+  message("Writing ", analyse_file)
+  write.table(analyse_tbl, analyse_file, sep = ",", quote = FALSE,
+              row.names = FALSE, fileEncoding = "GBK")
+
+  # return RMSE/MAE
+  return(list(RMSE = RMSE, MAE = MAE))
 }
 
 #
@@ -899,7 +1077,7 @@ AAFC_training_temporal <- function(work_dir, work_name, subject,
 # serialized keys to verify data consistency
 #
 AAFC_table_serialize <- function(src_dir, src_prefix, dst_dir, dst_prefix,
-                                 start_day, end_day)
+                                 start_day, end_day, select = "")
 {
   # day index
   sday <- as.Date(start_day)
@@ -925,6 +1103,9 @@ AAFC_table_serialize <- function(src_dir, src_prefix, dst_dir, dst_prefix,
     message("Reading ", src_name[i])
     tbl <- read.table(src_name[i], sep = ",", header = TRUE,
                         stringsAsFactors = FALSE)
+    if (!identical(select, "")) {
+      tbl <- tbl[select]
+    }
     src_list <- append(src_list, list(tbl))
   }
 
@@ -948,5 +1129,4 @@ AAFC_table_serialize <- function(src_dir, src_prefix, dst_dir, dst_prefix,
                 row.names = FALSE, fileEncoding = "GBK")
   }
 }
-
 
