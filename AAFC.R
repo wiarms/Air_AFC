@@ -1139,18 +1139,17 @@ AAFC_analyse_W_temporal <- function(work_dir, work_name, subject,
   RES <- as.matrix(RES_reg_tbl[2:ncol(RES_reg_tbl)])
   AE <- abs(RES)
   SE <- AE ^ 2
-  EV <- AE
-  EV[!is.na(EV)] <- 1
-  EV[is.na(EV)] <- 0
-  sum_ev <- apply(EV, 1, sum)
-  sum_ev[sum_ev == 0] <- NA
-  sum_ae <- apply(AE, 1, sum, na.rm = T)
-  sum_se <- apply(SE, 1, sum, na.rm = T)
-  MAE <- sum_ae / sum_ev
-  RMSE <- sqrt(sum_se / sum_ev)
+  MAE <- apply(AE, 1, mean, na.rm = T)
+  MSE <- apply(SE, 1, mean, na.rm = T)
+  RMSE <- sqrt(MSE)
 
   # generate ANALYSE table
   ANALYSE_tbl <- data.frame(RES_reg_tbl[1], RMSE, MAE)
+  avg <- apply(ANALYSE_tbl, 2, mean, na.rm = T)
+  ANALYSE_tbl[, 1] <- as.character(ANALYSE_tbl[, 1])
+  avg <- as.data.frame(t(avg))
+  avg[, 1] <- "avg"
+  ANALYSE_tbl <- rbind(ANALYSE_tbl, avg)
 
   # save tables to file
   message("Writing ", OBS_reg_file)
