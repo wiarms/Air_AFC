@@ -864,7 +864,7 @@ AAFC_do_train_RR <- function(W_tbl, U_tbl, nr_models, show_missing = FALSE)
 # hyper training process, find best param for regression
 #
 # currently use region RMSE to estimate lambda, see
-# AAFC_analyse_temporal() for definition of region RMSE
+# AAFC_analyse_U_temporal() for definition of region RMSE
 #
 AAFC_hyper_training <- function(work_dir, work_name, subject,
                                    start_day, end_day,
@@ -907,7 +907,7 @@ AAFC_hyper_training <- function(work_dir, work_name, subject,
                        show_missing = show_missing)
 
     message("[*] Round result analyzing")
-    ret <- AAFC_analyse_temporal(work_dir, start_day, end_day)
+    ret <- AAFC_analyse_U_temporal(work_dir, start_day, end_day)
     rmse_reg <- ret$RMSE
     mae_reg <- ret$MAE
 
@@ -1010,17 +1010,17 @@ AAFC_hyper_training <- function(work_dir, work_name, subject,
                      show_missing = show_missing)
 
   message("[*] Round result analyzing")
-  AAFC_analyse_temporal(work_dir, start_day, end_day)
+  AAFC_analyse_U_temporal(work_dir, start_day, end_day)
 }
 
 #
-# Analyse AAFC work results, targets include RMSE and MAE
+# Analyse AAFC U results, targets include RMSE and MAE
 #
 # Note: RMSE of region is calculated by all valid stations in the region
 #       individually, not related to any average results of that region
 # Note: MAE of region is calculated based on average results of the region
 #
-AAFC_analyse_temporal <- function(work_dir, start_day, end_day)
+AAFC_analyse_U_temporal <- function(work_dir, start_day, end_day)
 {
   # data dir
   U_dir <- paste(work_dir, "/U", sep = "")
@@ -1071,13 +1071,113 @@ AAFC_analyse_temporal <- function(work_dir, start_day, end_day)
 }
 
 #
+# Analyse AAFC W results, targets include RMSE and MAE
+#
+# serialized work data can be binded with different REGION table,
+# so RMSE/MAE can be analysed by different region policies
+#
+# analyse result is saved in work_dir/U/S
+#
+AAFC_analyse_W_temporal <- function(work_dir, work_name, subject,
+                                    start_day, end_day, reg_file)
+{
+  # result dir
+  WS_prefix <- "WS_"
+  WS_dir <- paste(work_dir, "/U/S", sep = "")
+
+  # serialize statistics data in work files
+  work_prefix <- paste(work_name, "_", subject, "_", sep = "")
+  AAFC_table_serialize(work_dir, work_prefix, WS_dir, WS_prefix,
+                       start_day, end_day,
+                       select = c("obs_0d", "afc", "res"),
+                       bind = reg_file)
+
+  # WS file names
+  OBS_file <- paste(WS_dir, "/", WS_prefix, "obs_0d.csv", sep = "")
+  AFC_file <- paste(WS_dir, "/", WS_prefix, "afc.csv", sep = "")
+  RES_file <- paste(WS_dir, "/", WS_prefix, "res.csv", sep = "")
+
+  # REG file names
+  REG_prefix <- "REG_"
+  OBS_reg_file <- paste(WS_dir, "/", REG_prefix, "obs_0d.csv", sep = "")
+  AFC_reg_file <- paste(WS_dir, "/", REG_prefix, "afc.csv", sep = "")
+  RES_reg_file <- paste(WS_dir, "/", REG_prefix, "res.csv", sep = "")
+  ANALYSE_file <- paste(WS_dir, "/", REG_prefix, "ANALYSE.csv", sep = "")
+
+  # set correct col_classes
+  sday <- as.Date(start_day)
+  eday <- as.Date(end_day)
+  WS_ex_cols <- abs(difftime(sday, eday, units = "days")) + 1
+  WS_col_classes <- c("integer", "character", rep("numeric", WS_ex_cols))
+
+  # read in statistics tables
+  message("Reading ", OBS_file)
+  OBS_tbl <- read.table(OBS_file, sep = ",", header = T,
+                        colClasses = WS_col_classes,
+                        stringsAsFactors = F)
+  message("Reading ", AFC_file)
+  AFC_tbl <- read.table(AFC_file, sep = ",", header = T,
+                        colClasses = WS_col_classes,
+                        stringsAsFactors = F)
+  message("Reading ", RES_file)
+  RES_tbl <- read.table(RES_file, sep = ",", header = T,
+                        colClasses = WS_col_classes,
+                        stringsAsFactors = F)
+
+  # reshape to region mean table
+  library("reshape2")
+  message("Reshaping...")
+  md <- melt(OBS_tbl, id = c("REG", "SID"))
+  OBS_reg_tbl <- dcast(md, REG~variable, mean, na.rm = T)
+  md <- melt(AFC_tbl, id = c("REG", "SID"))
+  AFC_reg_tbl <- dcast(md, REG~variable, mean, na.rm = T)
+  md <- melt(RES_tbl, id = c("REG", "SID"))
+  RES_reg_tbl <- dcast(md, REG~variable, mean, na.rm = T)
+
+  # calculate region RMSE/MAE
+  message("Analyzing...")
+  RES <- as.matrix(RES_reg_tbl[2:ncol(RES_reg_tbl)])
+  AE <- abs(RES)
+  SE <- AE ^ 2
+  EV <- AE
+  EV[!is.na(EV)] <- 1
+  EV[is.na(EV)] <- 0
+  sum_ev <- apply(EV, 1, sum)
+  sum_ev[sum_ev == 0] <- NA
+  sum_ae <- apply(AE, 1, sum, na.rm = T)
+  sum_se <- apply(SE, 1, sum, na.rm = T)
+  MAE <- sum_ae / sum_ev
+  RMSE <- sqrt(sum_se / sum_ev)
+
+  # generate ANALYSE table
+  ANALYSE_tbl <- data.frame(RES_reg_tbl[1], RMSE, MAE)
+
+  # save tables to file
+  message("Writing ", OBS_reg_file)
+  write.table(OBS_reg_tbl, OBS_reg_file, sep = ",", quote = FALSE,
+              row.names = FALSE, fileEncoding = "GBK")
+  message("Writing ", AFC_reg_file)
+  write.table(AFC_reg_tbl, AFC_reg_file, sep = ",", quote = FALSE,
+              row.names = FALSE, fileEncoding = "GBK")
+  message("Writing ", RES_reg_file)
+  write.table(RES_reg_tbl, RES_reg_file, sep = ",", quote = FALSE,
+              row.names = FALSE, fileEncoding = "GBK")
+  message("Writing ", ANALYSE_file)
+  write.table(ANALYSE_tbl, ANALYSE_file, sep = ",", quote = FALSE,
+              row.names = FALSE, fileEncoding = "GBK")
+
+  # return RMSE/MAE
+  return(list(RMSE = RMSE, MAE = MAE))
+}
+
+#
 # a common process to serialize day-divided tables with same format
 #
 # Note: data directly combined without merge, remember to check
 # serialized keys to verify data consistency
 #
 AAFC_table_serialize <- function(src_dir, src_prefix, dst_dir, dst_prefix,
-                                 start_day, end_day, select = "")
+                                 start_day, end_day, select = "", bind = "")
 {
   # day index
   sday <- as.Date(start_day)
@@ -1125,6 +1225,10 @@ AAFC_table_serialize <- function(src_dir, src_prefix, dst_dir, dst_prefix,
     message("Writing ", dst_name[i])
     tbl <- as.data.frame(sapply(src_list, sel_col, i))
     names(tbl) <- day_prefix_idx
+    if (!identical(bind, "")) {
+      b_tbl <- read.csv(bind)
+      tbl <- cbind(b_tbl, tbl)
+    }
     write.table(tbl, dst_name[i], sep = ",", quote = FALSE,
                 row.names = FALSE, fileEncoding = "GBK")
   }
