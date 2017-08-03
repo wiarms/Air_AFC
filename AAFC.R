@@ -579,6 +579,8 @@ AAFC_gen_work_dir <- function(models_dir, subject, models_str, obs_str,
 # UT_tbl for training, saved to the next day of current day
 # US_tbl for training statistic convenience, saved to current day
 #
+# Note: att_ratio (0,1] for LWR (temporal locally weighted)
+#
 AAFC_work_temporal <- function(work_dir, work_name, subject,
                                start_day, end_day,
                                nr_models, afc_lookahead = 1,
@@ -589,7 +591,8 @@ AAFC_work_temporal <- function(work_dir, work_name, subject,
                                predict_handler = AAFC_do_predict_RR,
                                observe_handler = AAFC_do_observe_NORMAL,
                                train_handler = AAFC_do_train_RR,
-                               show_missing = FALSE)
+                               show_missing = FALSE,
+                               att_ratio = 1)
 {
   # param check
   if (afc_lookahead < 1) {
@@ -687,7 +690,7 @@ AAFC_work_temporal <- function(work_dir, work_name, subject,
       update_W <- TRUE
     }
     if (do_train) {
-      result <- train_handler(W_tbl, UT_tbl, nr_models, show_missing)
+      result <- train_handler(W_tbl, UT_tbl, nr_models, show_missing, att_ratio)
       UT_tbl <- result$U_tbl
       update_U <- TRUE
     }
@@ -775,8 +778,10 @@ AAFC_do_predict_RR <- function(W_tbl, U_tbl, nr_models, show_missing = FALSE)
 # | b0 | u1 | u2 | .. | A11 | A12 | ..
 #
 # Note: assumes in W table, obs follows the last model column
+# Note: att_ratio (0,1] for LWR (temporal locally weighted)
 #
-AAFC_do_train_RR <- function(W_tbl, U_tbl, nr_models, show_missing = FALSE)
+AAFC_do_train_RR <- function(W_tbl, U_tbl, nr_models, show_missing = FALSE,
+                             att_ratio = 1)
 {
   library("MASS")
   regions <- U_tbl[ , c("REG")]
@@ -826,7 +831,7 @@ AAFC_do_train_RR <- function(W_tbl, U_tbl, nr_models, show_missing = FALSE)
       res <- afc - t(obs)
 
       # calculate At1 and At1'
-      At1 <- At + t(m) %*% m
+      At1 <- At * att_ratio + t(m) %*% m
       At1_inv <- ginv(At1)
 
       # calculate Ut1
@@ -1233,3 +1238,77 @@ AAFC_table_serialize <- function(src_dir, src_prefix, dst_dir, dst_prefix,
   }
 }
 
+#
+# specific application run
+#
+AAFC_auto_run <- function(do_dir = TRUE,
+                          do_regression = TRUE,
+                          do_analyse = TRUE)
+{
+  #period_list <- c("0d", "1d", "2d", "3d", "4d", "5d", "6d")
+  period_list <- c("0d")
+  subject_list <- c("PM2.5", "PM10", "CO", "NO2", "SO2", "O3_8H")
+  work_name <- "M4_SID"
+  lambda <- 2000
+  att_ratio <- 0.86  # attenuate to 0.1 in 15 days
+  #lambda <- 5000
+  #att_ratio <- 0.72   # attenuate to 0.1 in 7 days
+
+  for (period in period_list) {
+    for (subject in subject_list) {
+      AAFC_run_job(subject, period, work_name, lambda, att_ratio,
+                   do_dir, do_regression, do_analyse)
+    }
+  }
+}
+
+AAFC_run_job <- function(subject, period, work_name, lambda, att_ratio,
+                         do_dir = TRUE,
+                         do_regression = TRUE,
+                         do_analyse = TRUE)
+{
+  models_dir <- "data/base_d02"
+  models_str <- c("camx_d02", "cmaq_d02", "naqp_d02", "wrfc_d02")
+  models_str <- paste(models_str, "_", period, sep = "")
+  nr_models <- 4
+  obs_str <- "obs_0d"
+  work_dir <- paste("data/", work_name, "_", subject, "_", period, sep = "")
+  REG_file_sid <- "data/REG_SID.csv"
+  REG_file_city <- "data/REG_CITY.csv"
+
+  start_day_t <- "2015-09-01"
+  end_day_t <- "2016-12-31"
+  start_day_p <- "2016-01-01"
+  end_day_p <- "2016-12-31"
+
+  #start_day_t <- "2015-09-01"
+  #end_day_t <- "2015-09-30"
+  #start_day_p <- "2015-09-01"
+  #end_day_p <- "2015-09-30"
+
+  if (do_dir) {
+    AAFC_gen_work_dir(models_dir = models_dir, subject = subject,
+                      models_str = models_str, obs_str = obs_str,
+                      work_dir = work_dir, work_name = work_name,
+                      REG_file = REG_file_sid)
+  }
+
+  if (do_regression) {
+    ret <- AAFC_work_temporal(work_dir = work_dir, work_name = work_name,
+                              subject = subject,
+                              start_day = start_day_t, end_day = end_day_t,
+                              nr_models = nr_models,
+                              reset_work = TRUE, lambda = lambda,
+                              show_missing = FALSE,
+                              att_ratio = att_ratio)
+
+  }
+
+  if (do_analyse) {
+    ret <- AAFC_analyse_W_temporal(work_dir = work_dir, work_name = work_name,
+                                   subject = subject,
+                                   start_day = start_day_p, end_day = end_day_p,
+                                   reg_file = REG_file_city)
+  }
+
+}
