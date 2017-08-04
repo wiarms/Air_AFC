@@ -1081,13 +1081,15 @@ AAFC_analyse_U_temporal <- function(work_dir, start_day, end_day)
 #
 # Analyse AAFC W results, targets include RMSE and MAE
 #
-# serialized work data can be binded with different REGION table,
+# serialized work data can be merged with different REGION table,
 # so RMSE/MAE can be analysed by different region policies
 #
 # analyse result is saved in work_dir/U/S
 #
 AAFC_analyse_W_temporal <- function(work_dir, work_name, subject,
-                                    start_day, end_day, reg_file)
+                                    start_day, end_day,
+                                    bind_file, merge_file, merge_by,
+                                    col_layout)
 {
   # result dir
   WS_prefix <- "WS_"
@@ -1098,7 +1100,10 @@ AAFC_analyse_W_temporal <- function(work_dir, work_name, subject,
   AAFC_table_serialize(work_dir, work_prefix, WS_dir, WS_prefix,
                        start_day, end_day,
                        select = c("obs_0d", "afc", "res"),
-                       bind = reg_file)
+                       bind_file = bind_file,
+                       merge_file = merge_file,
+                       merge_by = merge_by,
+                       col_layout = col_layout)
 
   # WS file names
   OBS_file <- paste(WS_dir, "/", WS_prefix, "obs_0d.csv", sep = "")
@@ -1184,7 +1189,12 @@ AAFC_analyse_W_temporal <- function(work_dir, work_name, subject,
 # serialized keys to verify data consistency
 #
 AAFC_table_serialize <- function(src_dir, src_prefix, dst_dir, dst_prefix,
-                                 start_day, end_day, select = "", bind = "")
+                                 start_day, end_day,
+                                 select = "",
+                                 bind_file = "",
+                                 merge_file = "",
+                                 merge_by = "",
+                                 col_layout = "")
 {
   # day index
   sday <- as.Date(start_day)
@@ -1217,7 +1227,7 @@ AAFC_table_serialize <- function(src_dir, src_prefix, dst_dir, dst_prefix,
   }
 
   # col select function
-  sel_col <- function(x, col_idx) x[ , col_idx]
+  sel_col <- function(x, col_idx) x[ , col_idx, drop = FALSE]
 
   # serialize by column
   nr_col <- ncol(src_list[[1]])
@@ -1232,9 +1242,17 @@ AAFC_table_serialize <- function(src_dir, src_prefix, dst_dir, dst_prefix,
     message("Writing ", dst_name[i])
     tbl <- as.data.frame(sapply(src_list, sel_col, i))
     names(tbl) <- day_prefix_idx
-    if (!identical(bind, "")) {
-      b_tbl <- read.csv(bind)
+    if (!identical(bind_file, "")) {
+      b_tbl <- read.csv(bind_file)
       tbl <- cbind(b_tbl, tbl)
+    }
+    if (!identical(merge_file, "")) {
+      m_tbl <- read.csv(merge_file)
+      tbl <- merge(m_tbl, tbl, by = merge_by, sort = F)
+    }
+    if (!identical(col_layout, "")) {
+      other <- !(names(tbl) %in% col_layout)
+      tbl <- cbind(tbl[col_layout], tbl[other])
     }
     write.table(tbl, dst_name[i], sep = ",", quote = FALSE,
                 row.names = FALSE, fileEncoding = "GBK")
@@ -1252,13 +1270,8 @@ AAFC_auto_run <- function(do_dir = TRUE,
   period_list <- c("0d")
   subject_list <- c("PM2.5", "PM10", "CO", "NO2", "SO2", "O3_8H")
   work_name <- "M4_SID"
-  #lambda <- 2000
-  lambda <- 500
-  #lambda <- 200
-  #att_ratio <- 0.86  # attenuate to 0.1 in 15 days
-  att_ratio <- 0.72  # attenuate to 0.1 in 7 days
-  #att_ratio <- 0.64  # attenuate to 0.1 in 5 days
-  #att_ratio <- 0.47  # attenuate to 0.1 in 3 days
+  lambda <- 5
+  att_ratio <- 0.86
 
   for (period in period_list) {
     for (subject in subject_list) {
@@ -1281,16 +1294,23 @@ AAFC_run_job <- function(subject, period, work_name, lambda, att_ratio,
   work_dir <- paste("data/", work_name, "_", subject, "_", period, sep = "")
   REG_file_sid <- "data/REG_SID.csv"
   REG_file_city <- "data/REG_CITY.csv"
+  SID_file <- "data/SID.csv"
 
   start_day_t <- "2015-09-01"
   end_day_t <- "2016-12-31"
   start_day_p <- "2016-01-01"
   end_day_p <- "2016-12-31"
 
-  #start_day_t <- "2015-09-01"
-  #end_day_t <- "2015-09-30"
-  #start_day_p <- "2015-09-11"
-  #end_day_p <- "2015-09-30"
+  ###########
+  #models_dir <- "data/basex_d02"
+  #REG_file_sid <- "data/basex_d02/REG_SID.csv"
+  #REG_file_city <- "data/basex_d02/REG_SID.csv"
+  #SID_file <- "data/basex_d02/SID.csv"
+  #start_day_t <- "2016-01-01"
+  #end_day_t <- "2016-01-18"
+  #start_day_p <- "2016-01-01"
+  #end_day_p <- "2016-01-18"
+  ############
 
   if (do_dir) {
     AAFC_gen_work_dir(models_dir = models_dir, subject = subject,
@@ -1314,7 +1334,9 @@ AAFC_run_job <- function(subject, period, work_name, lambda, att_ratio,
     ret <- AAFC_analyse_W_temporal(work_dir = work_dir, work_name = work_name,
                                    subject = subject,
                                    start_day = start_day_p, end_day = end_day_p,
-                                   reg_file = REG_file_city)
+                                   bind_file = SID_file,
+                                   merge_file = REG_file_city,
+                                   merge_by = "SID",
+                                   col_layout = c("REG", "SID"))
   }
-
 }
