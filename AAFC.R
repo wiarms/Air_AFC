@@ -793,12 +793,14 @@ AAFC_do_train_RR <- function(W_tbl, U_tbl, nr_models, show_missing = FALSE,
   U_col_names <- names(U_tbl)
   idx_SID <- which(W_col_names == "SID")[1]
   idx_m <- idx_SID + 1
+  idx_lambda <- which(U_col_names == "lambda")[1]
   idx_b0 <- which(U_col_names == "b0")[1]
   idx_u <- idx_b0 + 1
   idx_a <- which(U_col_names == "A_11")[1]
 
   for (i in regions) {
     # original data from data frame
+    lambda <- U_tbl[i, idx_lambda]
     Ut <- U_tbl[i, idx_b0:(idx_b0 + nr_models), drop = F] # b0, u(1..nr_models)
     At_line <- U_tbl[i, idx_a:(idx_a + nr_a ^ 2 - 1), drop = F]
     m_obs <- W_tbl[W_tbl$REG == i, idx_m:(idx_m + nr_models), drop = F] # m, obs
@@ -831,7 +833,8 @@ AAFC_do_train_RR <- function(W_tbl, U_tbl, nr_models, show_missing = FALSE,
       res <- afc - t(obs)
 
       # calculate At1 and At1'
-      At1 <- At * att_ratio + t(m) %*% m
+      Ai <- diag(rep(lambda, nr_a))
+      At1 <- (At - Ai) * att_ratio + Ai + t(m) %*% m
       At1_inv <- ginv(At1)
 
       # calculate Ut1
@@ -1249,10 +1252,13 @@ AAFC_auto_run <- function(do_dir = TRUE,
   period_list <- c("0d")
   subject_list <- c("PM2.5", "PM10", "CO", "NO2", "SO2", "O3_8H")
   work_name <- "M4_SID"
-  lambda <- 2000
-  att_ratio <- 0.86  # attenuate to 0.1 in 15 days
-  #lambda <- 5000
-  #att_ratio <- 0.72   # attenuate to 0.1 in 7 days
+  #lambda <- 2000
+  lambda <- 500
+  #lambda <- 200
+  #att_ratio <- 0.86  # attenuate to 0.1 in 15 days
+  att_ratio <- 0.72  # attenuate to 0.1 in 7 days
+  #att_ratio <- 0.64  # attenuate to 0.1 in 5 days
+  #att_ratio <- 0.47  # attenuate to 0.1 in 3 days
 
   for (period in period_list) {
     for (subject in subject_list) {
@@ -1283,7 +1289,7 @@ AAFC_run_job <- function(subject, period, work_name, lambda, att_ratio,
 
   #start_day_t <- "2015-09-01"
   #end_day_t <- "2015-09-30"
-  #start_day_p <- "2015-09-01"
+  #start_day_p <- "2015-09-11"
   #end_day_p <- "2015-09-30"
 
   if (do_dir) {
