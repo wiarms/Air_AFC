@@ -325,7 +325,8 @@ AAFC_gen_REG_file <- function(src_file, dst_file, reg_key)
 # . res = residual
 #
 AAFC_gen_W_table <- function(src_dir, dst_dir, work_name, subject, xmodels_str,
-                             addons_str = character(0), REG_file)
+                             addons_str = character(0), REG_file,
+                             start_day, end_day)
 {
   # prepare for REG file
   REG_col_names <- c("REG", "SID")
@@ -342,6 +343,21 @@ AAFC_gen_W_table <- function(src_dir, dst_dir, work_name, subject, xmodels_str,
   model_file <- paste(src_dir, "/", subject, "_", xmodels_str, ".csv", sep = "")
   model_tbl <- list()
 
+  # prepare column names to be selected
+  sday <- as.Date(start_day)
+  eday <- as.Date(end_day)
+  if (sday > eday) {
+    tmp <- sday
+    sday <- eday
+    eday <- tmp
+  }
+  nr_days <- difftime(eday, sday, units = "days") + 1
+  day_idx <- seq(sday, by = "day", length.out = nr_days)
+  day_idx <- format(day_idx, "%Y%m%d")
+  day_prefix <- "D"
+  day_col_idx <- paste(day_prefix, day_idx, sep = "")
+  day_col_idx <- c("REG", "SID", day_col_idx)
+
   # read in model table and merge with REG_tbl
   for (i in 1:nr_xmodels) {
     message("reading in ", model_file[i])
@@ -349,7 +365,9 @@ AAFC_gen_W_table <- function(src_dir, dst_dir, work_name, subject, xmodels_str,
                                  colClasses = c("character"),
                                  strip.white = TRUE,
                                  stringsAsFactors = FALSE)
-    model_tbl[[i]] <- merge(REG_tbl, tbl, by = "SID", sort = FALSE)
+    tbl <- merge(REG_tbl, tbl, by = "SID", sort = FALSE)
+    tbl <- tbl[day_col_idx]
+    model_tbl[[i]] <- tbl
   }
 
   # check consistency of models
@@ -405,7 +423,7 @@ AAFC_gen_W_table <- function(src_dir, dst_dir, work_name, subject, xmodels_str,
 #
 # U table (for each day) -->
 # | REG | snr | snr_v | avg_afc | avg_obs | avg_e | sum_se | lambda |
-# | b0 | u1 | u2 | .. | A11 | A12 | ..
+# | b0 | u1 | u2 | .. | A_1_1 | A_1_2 | ..
 #
 # REG               = region
 # snr               = number of stations in the region
@@ -474,7 +492,7 @@ AAFC_gen_U_table <- function(dst_dir, dst_file, models_str, REG_file)
   for (i in 1:nr_a) {
     for (j in 1:nr_a) {
       U_tbl <- cbind(U_tbl, tmp)
-      names(U_tbl)[ncol(U_tbl)] <- paste("A_", as.character(i),
+      names(U_tbl)[ncol(U_tbl)] <- paste("A_", as.character(i), "_",
                                          as.character(j), sep = "")
     }
   }
@@ -494,7 +512,7 @@ AAFC_gen_U_table <- function(dst_dir, dst_file, models_str, REG_file)
 #
 # U table (for each day) -->
 # | REG | snr | snr_v | avg_afc | avg_obs | avg_e | sum_se | lambda |
-# | b0 | u1 | u2 | .. | A11 | A12 | ..
+# | b0 | u1 | u2 | .. | A_1_1 | A_1_2 | ..
 #
 AAFC_rst_U_table <- function(U_file, nr_models, lambda)
 {
@@ -542,7 +560,8 @@ AAFC_rst_U_table <- function(U_file, nr_models, lambda)
 # Prepare for work directory
 #
 AAFC_gen_work_dir <- function(models_dir, subject, models_str, obs_str,
-                              work_dir, work_name, REG_file)
+                              work_dir, work_name, REG_file,
+                              start_day, end_day)
 {
   xmodels_str <- c(models_str, obs_str)
   U_dir <- paste(work_dir, "/U", sep = "")
@@ -551,7 +570,7 @@ AAFC_gen_work_dir <- function(models_dir, subject, models_str, obs_str,
   message("Generating work directory")
   message("Generating W tables...")
   AAFC_gen_W_table(models_dir, work_dir, work_name, subject, xmodels_str,
-                   c("afc", "res"), REG_file)
+                   c("afc", "res"), REG_file, start_day, end_day)
   message("Generating U table...")
   AAFC_gen_U_table(U_dir, U_name, models_str, REG_file)
   message("Generating work directory OK")
@@ -566,7 +585,7 @@ AAFC_gen_work_dir <- function(models_dir, subject, models_str, obs_str,
 #
 # U table (for each day) -->
 # | REG | snr | snr_v | avg_afc | avg_obs | avg_e | sum_se | lambda |
-# | b0 | u1 | u2 | .. | A11 | A12 | ..
+# | b0 | u1 | u2 | .. | A_1_1 | A_1_2 | ..
 #
 # Note: in working process, data missing in W table is set to NA
 # Sub_note: assumes in W table, obs column is named "obs_0d"
@@ -733,7 +752,7 @@ AAFC_do_observe_NORMAL <- function(W_tbl, U_tbl, nr_models, show_missing = F)
 #
 # U table (for each day) -->
 # | REG | snr | snr_v | avg_afc | avg_obs | avg_e | sum_se | lambda |
-# | b0 | u1 | u2 | .. | A11 | A12 | ..
+# | b0 | u1 | u2 | .. | A_1_1 | A_1_2 | ..
 #
 AAFC_do_predict_RR <- function(W_tbl, U_tbl, nr_models, show_missing = FALSE)
 {
@@ -744,7 +763,7 @@ AAFC_do_predict_RR <- function(W_tbl, U_tbl, nr_models, show_missing = FALSE)
   idx_m <- idx_SID + 1
   idx_b0 <- which(U_col_names == "b0")[1]
   idx_u <- idx_b0 + 1
-  idx_a <- which(U_col_names == "A_11")[1]
+  idx_a <- which(U_col_names == "A_1_1")[1]
 
   regions <- U_tbl[ , c("REG")]
 
@@ -775,7 +794,7 @@ AAFC_do_predict_RR <- function(W_tbl, U_tbl, nr_models, show_missing = FALSE)
 #
 # U table (for each day) -->
 # | REG | snr | snr_v | avg_afc | avg_obs | avg_e | sum_se | lambda |
-# | b0 | u1 | u2 | .. | A11 | A12 | ..
+# | b0 | u1 | u2 | .. | A_1_1 | A_1_2 | ..
 #
 # Note: assumes in W table, obs follows the last model column
 # Note: att_ratio (0,1] for LWR (temporal locally weighted)
@@ -796,7 +815,7 @@ AAFC_do_train_RR <- function(W_tbl, U_tbl, nr_models, show_missing = FALSE,
   idx_lambda <- which(U_col_names == "lambda")[1]
   idx_b0 <- which(U_col_names == "b0")[1]
   idx_u <- idx_b0 + 1
-  idx_a <- which(U_col_names == "A_11")[1]
+  idx_a <- which(U_col_names == "A_1_1")[1]
 
   for (i in regions) {
     # original data from data frame
@@ -1289,14 +1308,22 @@ AAFC_run_job <- function(subject, period, work_name, lambda, att_ratio,
   models_dir <- "data/base_d02"
   models_str <- c("camx_d02", "cmaq_d02", "naqp_d02", "wrfc_d02")
   models_str <- paste(models_str, "_", period, sep = "")
-  nr_models <- 4
+  models_str <- c("camx_d02_0d", "cmaq_d02_0d", "naqp_d02_0d", "wrfc_d02_0d",
+                  "camx_d02_1d", "cmaq_d02_1d", "naqp_d02_1d", "wrfc_d02_1d",
+                  "camx_d02_2d", "cmaq_d02_2d", "naqp_d02_2d", "wrfc_d02_2d",
+                  "camx_d02_3d", "cmaq_d02_3d", "naqp_d02_3d", "wrfc_d02_3d",
+                  "camx_d02_4d", "cmaq_d02_4d", "naqp_d02_4d", "wrfc_d02_4d",
+                  "camx_d02_5d", "cmaq_d02_5d", "naqp_d02_5d", "wrfc_d02_5d",
+                  "camx_d02_6d", "cmaq_d02_6d", "naqp_d02_6d", "wrfc_d02_6d"
+                  )
+  nr_models <- length(models_str)
   obs_str <- "obs_0d"
   work_dir <- paste("data/", work_name, "_", subject, "_", period, sep = "")
   REG_file_sid <- "data/REG_SID.csv"
   REG_file_city <- "data/REG_CITY.csv"
   SID_file <- "data/SID.csv"
 
-  start_day_t <- "2015-09-01"
+  start_day_t <- "2015-12-01"
   end_day_t <- "2016-12-31"
   start_day_p <- "2016-01-01"
   end_day_p <- "2016-12-31"
@@ -1316,7 +1343,8 @@ AAFC_run_job <- function(subject, period, work_name, lambda, att_ratio,
     AAFC_gen_work_dir(models_dir = models_dir, subject = subject,
                       models_str = models_str, obs_str = obs_str,
                       work_dir = work_dir, work_name = work_name,
-                      REG_file = REG_file_sid)
+                      REG_file = REG_file_sid,
+                      start_day_t, end_day_t)
   }
 
   if (do_regression) {
