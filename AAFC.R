@@ -1202,6 +1202,99 @@ AAFC_analyse_W_temporal <- function(work_dir, work_name, subject,
 }
 
 #
+# Analyse AAFC base data, targets include RMSE and MAE
+#
+# select subset of specified data range of base file
+# data can be merged with different REGION table,
+# so RMSE/MAE can be analysed by different region policies
+#
+AAFC_analyse_base <- function(base_dir, subject, base_names,
+                              start_day, end_day, REG_file)
+{
+  # prepares
+  analyse_dir <- paste(base_dir, "/analyse", sep = "")
+  col_names <- AAFC_gen_day_idx(start_day, end_day, "D")
+  col_names <- c("SID", col_names)
+  nr_bases <- length(base_names)
+
+  # file names
+  obs_file <- paste(base_dir, "/", subject, "_obs_0d.csv", sep = "")
+  base_files <- paste(base_dir, "/", subject, "_", base_names, ".csv", sep = "")
+  res_files <- paste(analyse_dir, "/", subject, "_", base_names, "_res.csv",
+                     sep = "")
+  RMSE_sum_file <- paste(analyse_dir, "/", subject, "_RMSE.csv", sep = "")
+  MAE_sum_file <- paste(analyse_dir, "/", subject, "_MAE.csv", sep = "")
+
+  # read-in files
+  message("Reading REG/obs...")
+  REG_tbl <- read.csv(REG_file)
+  obs_tbl <- read.csv(obs_file)[col_names]
+  obs_tbl[obs_tbl == -999] <- NA
+  base_tbls <- list()
+  res_tbls <- list()
+  for (i in 1:nr_bases) {
+    message("Reading ", base_files[i], "...")
+    b_tbl <- read.csv(base_files[i])[col_names]
+    b_tbl[b_tbl == -999] <- NA
+    r_tbl <- b_tbl - obs_tbl
+    r_tbl[1] <- b_tbl[1]
+    base_tbls[[i]] <- b_tbl
+    res_tbls[[i]] <- r_tbl
+  }
+
+  # calculate RMSE/MAE
+  message("Calculating...")
+  rmse_tbls <- list()
+  mae_tbls <- list()
+  library("reshape2")
+  for (i in 1:nr_bases) {
+    # merge with REGION
+    res_tbls[[i]] <- merge(REG_tbl, res_tbls[[i]], by = "SID", sort = F)
+    if (!identical(REG_tbl["REG"], res_tbls[[i]]["REG"])) {
+      stop("REG column mis-match")
+    }
+
+    # mean SID to REGION
+    md <- melt(res_tbls[[i]], id = c("REG", "SID"))
+    res_tbls[[i]] <- dcast(md, REG~variable, mean, na.rm = T)
+
+    # calculate
+    RES <- as.matrix(res_tbls[[i]][-1])
+    AE <- abs(RES)
+    SE <- AE ^ 2
+    MAE <- apply(AE, 1, mean, na.rm = T)
+    MSE <- apply(SE, 1, mean, na.rm = T)
+    RMSE <- sqrt(MSE)
+    rmse_tbls[[i]] <- RMSE
+    mae_tbls[[i]] <- MAE
+  }
+
+  # col select function
+  sel <- function(x) x
+
+  # RMSE summary
+  RMSE_sum_tbl <- as.data.frame(sapply(rmse_tbls, sel))
+  names(RMSE_sum_tbl) <- base_names
+  RMSE_sum_tbl <- cbind(res_tbls[[1]]["REG"], RMSE_sum_tbl)
+
+  # MAE summary
+  MAE_sum_tbl <- as.data.frame(sapply(mae_tbls, sel))
+  names(MAE_sum_tbl) <- base_names
+  MAE_sum_tbl <- cbind(res_tbls[[1]]["REG"], MAE_sum_tbl)
+
+  # save files
+  message("Saving analyse files...")
+  if (!dir.exists(analyse_dir)) {
+    dir.create(analyse_dir)
+  }
+  for (i in 1:nr_bases) {
+    write.csv(res_tbls[[i]], res_files[i], row.names = FALSE)
+  }
+  write.csv(RMSE_sum_tbl, RMSE_sum_file, row.names = FALSE)
+  write.csv(MAE_sum_tbl, MAE_sum_file, row.names = FALSE)
+}
+
+#
 # a common process to serialize day-divided tables with same format
 #
 # Note: data directly combined without merge, remember to check
@@ -1276,6 +1369,26 @@ AAFC_table_serialize <- function(src_dir, src_prefix, dst_dir, dst_prefix,
     write.table(tbl, dst_name[i], sep = ",", quote = FALSE,
                 row.names = FALSE, fileEncoding = "GBK")
   }
+}
+
+#
+# a common process to generate day indexed strings
+#
+AAFC_gen_day_idx <- function(start_day, end_day, prefix)
+{
+  sday <- as.Date(start_day)
+  eday <- as.Date(end_day)
+  if (sday <= eday) {
+    nr_days <- difftime(eday, sday, units = "days") + 1
+    day_seq_by <- "day"
+  } else {
+    nr_days <- difftime(sday, eday, units = "days") + 1
+    day_seq_by <- "-1 day"
+  }
+  day_idx <- seq(sday, by = day_seq_by, length.out = nr_days)
+  day_idx <- format(day_idx, "%Y%m%d")
+  day_idx <- paste(prefix, day_idx, sep = "")
+  return(day_idx)
 }
 
 #
